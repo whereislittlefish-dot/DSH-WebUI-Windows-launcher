@@ -22,7 +22,9 @@
 | 方式 | 适合 |
 |---|---|
 | **[直接下载 DSH WebUI.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/DSH%20WebUI.exe)**（73 KB）| 只想快点用上 |
-| [Releases 页面](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases) | 想看版本记录、下最新版 |
+| [Releases 页面](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases) | 想看版本记录、下打包版本 |
+
+> 仓库里的 `DSH WebUI.exe` 与 Releases 里的附件来自**同一份源码**（仓库中的 `src/`）。Releases 用于留存每个版本的构建产物，日常直接下载仓库里那份即可。
 
 下载后**把它放进你想作为工作区的文件夹**，然后双击运行。详见下方「快速开始」。
 
