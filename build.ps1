@@ -10,49 +10,55 @@
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
+Write-Host '== build =='
+Write-Host "PowerShell : $($PSVersionTable.PSVersion)"
+Write-Host "OS         : $([System.Environment]::OSVersion.VersionString)"
+Write-Host "Root       : $root"
+
 # 查找 C# 编译器。
-# 不同机器上 csc.exe 的位置不一样：
-#   - 普通 Windows 10/11：System32 下的 .NET Framework 目录
-#   - GitHub Actions runner：只有 Visual Studio 里的 Roslyn 版本
-#     (C:\Program Files\Microsoft Visual Studio\2022\...\MSBuild\Current\Bin\Roslyn\csc.exe)
-# 所以这里逐个探测常见位置，而不是写死一条路径。
-$cscCandidates = @(
-    (Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
-    (Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
-)
+# 不同机器上 csc.exe 的位置不一样:
+#   - 普通 Windows 10/11: System32 下的 .NET Framework 目录
+#   - GitHub Actions runner: Visual Studio 里的 Roslyn 版本
+# 不要用 -Recurse 扫 Visual Studio 目录: 那里有成千上万个文件, 会把构建拖到超时。
+$cscCandidates = New-Object System.Collections.Generic.List[string]
+$cscCandidates.Add((Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'))
+$cscCandidates.Add((Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'))
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (Test-Path -LiteralPath $vswhere) {
-    $vsRoot = & $vswhere -latest -products * -property installationPath 2>$null
-    if ($vsRoot) {
-        $cscCandidates += (Join-Path $vsRoot.Trim() 'MSBuild\Current\Bin\Roslyn\csc.exe')
+    try {
+        $vsRoot = & $vswhere -latest -products * -property installationPath 2>$null
+        if ($vsRoot) {
+            $cscCandidates.Add((Join-Path $vsRoot.Trim() 'MSBuild\Current\Bin\Roslyn\csc.exe'))
+        }
+    } catch {
+        Write-Host "vswhere failed: $($_.Exception.Message)"
     }
 }
 
-# 注意：这里不要用 -Recurse 扫 Visual Studio 安装目录。
-# 那个目录有成千上万个文件，在 CI runner 上会让构建卡到超时。
-# 只探测确切位置即可。
 foreach ($base in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
     if (Test-Path -LiteralPath $base) {
         foreach ($year in @('2022', '2019', '2017')) {
             foreach ($edition in @('Enterprise', 'Professional', 'Community', 'BuildTools', 'Preview')) {
-                $cscCandidates += (Join-Path $base "$year\$edition\MSBuild\Current\Bin\Roslyn\csc.exe")
+                $cscCandidates.Add((Join-Path $base "$year\$edition\MSBuild\Current\Bin\Roslyn\csc.exe"))
             }
         }
     }
 }
 
-$cscCandidates = @($cscCandidates | Where-Object { $_ } | Select-Object -Unique)
-
-$csc = $cscCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-
-if (-not $csc) {
-    Write-Host '已探测的位置:'
-    $cscCandidates | ForEach-Object { Write-Host "  - $_" }
-    throw '找不到 csc.exe (C# 编译器)。'
+Write-Host '== csc.exe candidates =='
+$found = @()
+foreach ($c in ($cscCandidates | Select-Object -Unique)) {
+    $ok = Test-Path -LiteralPath $c
+    Write-Host "  [$(if ($ok) { 'FOUND' } else { 'missing' })] $c"
+    if ($ok) { $found += $c }
 }
 
-Write-Host "编译器: $csc"
+if ($found.Count -eq 0) {
+    throw 'No csc.exe found. Cannot compile.'
+}
+$csc = $found[0]
+Write-Host "Using compiler: $csc"
 
 $srcDir = Join-Path $root 'src'
 $outDirFull = Join-Path $root $OutDir
@@ -63,21 +69,34 @@ $ps1 = Join-Path $srcDir 'DSH-WebUI-WPF.ps1'
 $ico = Join-Path $srcDir 'app.ico'
 $cs  = Join-Path $srcDir 'Launcher.cs'
 
+Write-Host '== inputs =='
 foreach ($f in @($ps1, $ico, $cs)) {
-    if (-not (Test-Path -LiteralPath $f)) { throw "缺少源文件: $f" }
+    if (-not (Test-Path -LiteralPath $f)) { throw "Missing source file: $f" }
+    Write-Host ("  {0,8} bytes  {1}" -f (Get-Item -LiteralPath $f).Length, $f)
 }
 
-Write-Host '编译中...'
+if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue }
 
-& $csc /nologo /target:winexe `
+Write-Host '== compiling =='
+# 显式捕获 csc 的输出与退出码: 失败时必须能在这里看到真实原因,
+# 否则 CI 上只能看到"步骤失败"而无法定位。
+$output = & $csc /nologo /target:winexe `
     /win32icon:"$ico" `
     /out:"$exe" `
     /resource:"$ps1",DswWebUi.ui.ps1 `
     /resource:"$ico",DswWebUi.app.ico `
-    "$cs"
+    "$cs" 2>&1
+$code = $LASTEXITCODE
 
-if ($LASTEXITCODE -ne 0) { throw "编译失败（csc 退出码 $LASTEXITCODE）" }
-if (-not (Test-Path -LiteralPath $exe)) { throw '编译完成但没有产出 exe' }
+if ($output) {
+    Write-Host '== compiler output =='
+    $output | ForEach-Object { Write-Host "  $_" }
+}
+
+Write-Host "== csc exit code: $code =="
+
+if ($code -ne 0) { throw "Compile failed with exit code $code" }
+if (-not (Test-Path -LiteralPath $exe)) { throw 'csc reported success but produced no exe' }
 
 $size = [math]::Round((Get-Item -LiteralPath $exe).Length / 1KB, 1)
-Write-Host "完成: $exe ($size KB)"
+Write-Host "== done: $exe ($size KB) =="
