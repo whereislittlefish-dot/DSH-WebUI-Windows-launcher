@@ -29,13 +29,20 @@ if (Test-Path -LiteralPath $vswhere) {
     }
 }
 
+# 注意：这里不要用 -Recurse 扫 Visual Studio 安装目录。
+# 那个目录有成千上万个文件，在 CI runner 上会让构建卡到超时。
+# 只探测确切位置即可。
 foreach ($base in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
     if (Test-Path -LiteralPath $base) {
-        $found = Get-ChildItem -LiteralPath $base -Recurse -Filter 'csc.exe' -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($found) { $cscCandidates += $found.FullName }
+        foreach ($year in @('2022', '2019', '2017')) {
+            foreach ($edition in @('Enterprise', 'Professional', 'Community', 'BuildTools', 'Preview')) {
+                $cscCandidates += (Join-Path $base "$year\$edition\MSBuild\Current\Bin\Roslyn\csc.exe")
+            }
+        }
     }
 }
+
+$cscCandidates = @($cscCandidates | Where-Object { $_ } | Select-Object -Unique)
 
 $csc = $cscCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 
