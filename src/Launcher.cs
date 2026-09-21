@@ -1,4 +1,4 @@
-﻿// DSH WebUI - 单文件启动器
+// DSH WebUI - 单文件启动器
 // 把界面脚本内嵌为资源，运行时释放到临时目录并用隐藏窗口的 PowerShell 执行。
 // 这样用户只需要一个 .exe：双击即可，不会有命令窗口，也不会误点到别的文件。
 using System;
@@ -50,7 +50,7 @@ internal static class Launcher
                         byte[] bom = new byte[] { 0xEF, 0xBB, 0xBF };
                         output.Write(bom, 0, bom.Length);
                     }
-                    if (hasBom) { output.Write(head, 0, 3); }
+                    if (hasBom) { output.Write(head, 0, head.Length); }
                     input.CopyTo(output);
                 }
             }
