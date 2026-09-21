@@ -129,7 +129,7 @@ cd DSH-WebUI-Windows-launcher
 | `src/DSH-WebUI-WPF.ps1` | 界面本体（WPF）：状态检测、启动/停止、托盘、日志 |
 | `src/app.ico` | 图标（16~256 共 7 个尺寸）|
 | `build.ps1` | 调用 `csc` 编译出单文件 exe |
-| `.github/workflows/release.yml` | 打 tag 时自动构建并附到 Release |
+| `.github/workflows/release.yml` | CI：打 tag 自动构建并附到 Release，也可在 Actions 页手动触发 |
 
 想换图标：替换 `src/app.ico` 后重新运行 `build.ps1` 即可。
 
