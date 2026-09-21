@@ -552,6 +552,7 @@ $btnMain.Add_Click({
                 Remove-Item -LiteralPath $script:LogFile -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath "$($script:LogFile).err" -Force -ErrorAction SilentlyContinue
                 Write-UILog ("已停止，端口 {0} 已释放" -f $status.Port)
+        Write-UILog '提醒：浏览器里那个 DSH 标签页不会自动关闭，请手动关掉它（显示"需要重新连接"属正常）'
             }
         }
         catch { Write-UILog ("失败：{0}" -f $_.Exception.Message) }
@@ -635,6 +636,7 @@ $btnOpen.Add_Click({
         }
         Start-Process $base
         Write-UILog ("已在浏览器打开 http://127.0.0.1:{0}" -f $status.Port)
+        Write-UILog '（停止服务后该标签页需手动关闭，这是浏览器限制）'
     }
     else { Write-UILog '服务尚未运行，请先点「启动服务」' }
 })
