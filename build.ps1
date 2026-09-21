@@ -78,14 +78,22 @@ foreach ($f in @($ps1, $ico, $cs)) {
 if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue }
 
 Write-Host '== compiling =='
+# 用参数数组而不是 "反引号续行 + 行内引号":
+# PowerShell 7 改写参数时会保留字面量, 写成 /resource:"$ps1",Name 时
+# csc 收到的是字面字符串 "$ps1" 而不是它的值, 报 CS1566 (Error reading
+# resource file '...\"$ps1"')。参数数组在 5.1 与 7 上行为一致。
+$cscArgs = @(
+    '/nologo'
+    '/target:winexe'
+    ('/win32icon:' + $ico)
+    ('/out:' + $exe)
+    ('/resource:' + $ps1 + ',DswWebUi.ui.ps1')
+    ('/resource:' + $ico + ',DswWebUi.app.ico')
+    $cs
+)
 # 显式捕获 csc 的输出与退出码: 失败时必须能在这里看到真实原因,
 # 否则 CI 上只能看到"步骤失败"而无法定位。
-$output = & $csc /nologo /target:winexe `
-    /win32icon:"$ico" `
-    /out:"$exe" `
-    /resource:"$ps1",DswWebUi.ui.ps1 `
-    /resource:"$ico",DswWebUi.app.ico `
-    "$cs" 2>&1
+$output = & $csc @cscArgs 2>&1
 $code = $LASTEXITCODE
 
 if ($output) {
