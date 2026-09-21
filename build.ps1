@@ -64,7 +64,7 @@ $srcDir = Join-Path $root 'src'
 $outDirFull = Join-Path $root $OutDir
 New-Item -ItemType Directory -Force -Path $outDirFull | Out-Null
 
-$exe = Join-Path $outDirFull 'DSH WebUI.exe'
+$exe = Join-Path $outDirFull 'dsh-webui.exe'
 $ps1 = Join-Path $srcDir 'DSH-WebUI-WPF.ps1'
 $ico = Join-Path $srcDir 'app.ico'
 $cs  = Join-Path $srcDir 'Launcher.cs'

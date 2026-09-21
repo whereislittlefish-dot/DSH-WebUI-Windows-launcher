@@ -1,4 +1,4 @@
-﻿name: Build and Release
+name: Build and Release
 
 on:
   push:
@@ -46,11 +46,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DSH-WebUI-Windows-launcher
-          path: dist/DSH WebUI.exe
+          path: dist/dsh-webui.exe
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/DSH WebUI.exe
+          files: dist/dsh-webui.exe
           generate_release_notes: true

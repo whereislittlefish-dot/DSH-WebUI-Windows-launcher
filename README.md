@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="src/app.ico" width="80" alt="DSH WebUI launcher">
 </p>
 
@@ -12,7 +12,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Size: 73 KB" src="https://img.shields.io/badge/Size-73%20KB-171513.svg">
+  <img alt="Size: 74 KB" src="https://img.shields.io/badge/Size-74%20KB-171513.svg">
 </p>
 
 ---
@@ -21,13 +21,11 @@
 
 | 方式 | 适合 |
 |---|---|
-| **[直接下载 DSH WebUI.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/DSH%20WebUI.exe)**（73 KB）| 只想快点用上 |
+| **[直接下载 dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)**（74 KB）| 只想快点用上 |
 | [Releases 页面](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases) | 想看版本记录、下打包版本 |
-| [从 Release 直接下载](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases/download/v1.0.0/DSH.WebUI.exe) | 想要固定版本的附件 |
+| [从 Release 直接下载](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases/download/v1.0.0/dsh-webui.exe) | 想要固定版本的附件 |
 
-> 注意：Release 附件的文件名是 `DSH.WebUI.exe`（GitHub 会把上传文件名里的空格换成点号），与仓库里的 `DSH WebUI.exe` 是**同一份二进制**。
-
-> 仓库里的 `DSH WebUI.exe` 与 Releases 里的附件来自**同一份源码**（仓库中的 `src/`）。Releases 用于留存每个版本的构建产物，日常直接下载仓库里那份即可。
+> 仓库里的 `dsh-webui.exe` 与 Releases 里的附件来自**同一份源码**（仓库中的 `src/`）。Releases 用于留存每个版本的构建产物，日常直接下载仓库里那份即可。
 
 下载后**把它放进你想作为工作区的文件夹**，然后双击运行。详见下方「快速开始」。
 
@@ -48,7 +46,7 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 这个启动器把那些操作收进一个窗口里：
 
 - **一个按钮**，随状态自动在「启动服务 / 停止服务」之间切换——不需要记命令，也不会点错
-- **单文件 exe**（73 KB），双击即用，不带命令行窗口
+- **单文件 exe**（74 KB），双击即用，不带命令行窗口
 - **零依赖**：只用 Windows 自带的 .NET Framework 与 PowerShell
 - 服务以**独立后台进程**运行，关掉界面不会停止服务
 - 支持**最小化到系统托盘**
@@ -65,7 +63,7 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 
 ## 快速开始
 
-1. 下载 `DSH WebUI.exe`（见 Releases）
+1. 下载 `dsh-webui.exe`（见 Releases）
 2. **把它放进你希望做为「工作区」的文件夹**（见下方说明）
 3. 双击运行
 4. 点击「启动服务」
@@ -121,7 +119,7 @@ cd DSH-WebUI-Windows-launcher
 .\build.ps1
 ```
 
-产物在 `dist/DSH WebUI.exe`。
+产物在 `dist/dsh-webui.exe`。
 
 ### 结构
 
