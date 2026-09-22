@@ -12,8 +12,12 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.1.0-2563EB.svg">
-  <img alt="Size: 99 KB" src="https://img.shields.io/badge/Size-99%20KB-171513.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.1.1-2563EB.svg">
+  <img alt="Size: 97.5 KB" src="https://img.shields.io/badge/Size-97.5%20KB-171513.svg">
+</p>
+
+<p align="center">
+  <a href="README.en.md">English</a> | 中文
 </p>
 
 ---
@@ -22,13 +26,13 @@
 
 | 方式 | 适合 |
 |---|---|
-| **[直接下载 dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)**（99 KB）| 只想快点用上 |
+| **[直接下载 dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)**（97.5 KB）| 只想快点用上 |
 | [Releases 页面](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases) | 想看版本记录、下打包版本 |
 | [最新版 Release 附件](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases/latest) | 想要固定版本的附件 |
 
 > 仓库里的 `dsh-webui.exe` 与 Releases 里的附件来自**同一份源码**（仓库中的 `src/`）。Releases 用于留存每个版本的构建产物，日常直接下载仓库里那份即可。
 
-下载后**把它放进你想作为工作区的文件夹**，然后双击运行。详见下方「快速开始」。
+下载后**放在任意文件夹**双击运行即可——启动器放在哪里都不影响 dsh 的工作区。详见下方「快速开始」。
 
 > [!IMPORTANT]
 > **浏览器可能会拦截这次下载，这是正常的安全提示，不是文件有问题。**
@@ -47,7 +51,7 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 这个启动器把那些操作收进一个窗口里：
 
 - **一个按钮**，随状态自动在「启动服务 / 停止服务」之间切换——不需要记命令，也不会点错
-- **单文件 exe**（99 KB），双击即用，不带命令行窗口
+- **单文件 exe**（97.5 KB），双击即用，不带命令行窗口
 - **零依赖**：只用 Windows 自带的 .NET Framework 与 PowerShell
 - 服务以**独立后台进程**运行，关掉界面不会停止服务
 - 支持**最小化到系统托盘**
@@ -65,10 +69,9 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 
 ## 快速开始
 
-1. 下载 `dsh-webui.exe`
-2. **把它放进你希望做为「工作区」的文件夹**（见下方说明）
-3. 双击运行
-4. 点击「启动服务」
+1. 下载 `dsh-webui.exe`（放在哪个文件夹都可以）
+2. 双击运行
+3. 点击「启动服务」
 
 首次点「启动服务」时会依次处理两件事，每一步都有明确提示，窗口不会假死：
 
@@ -107,16 +110,18 @@ PATH 里找不到 `node` 时，会继续探测几个常见安装位置
 
 ## 关于「工作区」
 
-工作区就是 dsh 的默认工作目录——agent 读写文件、执行命令都以它为根。
+工作区就是 dsh 里 agent 干活的地方——读写文件、执行命令都以它为根。
 
-**本启动器的规则很简单：exe 放在哪个文件夹，工作区就是哪里。**
+**工作区完全在 DSH WebUI 里管理：新建对话时先选（或新建）一个工作区，对话就落在那个目录下。**
 
-所以：
+启动器只负责启动 / 停止服务，**不参与、也决定不了工作区**：
 
-- exe 放在 `D:\myproject\` → 工作区是 `D:\myproject`
-- exe 放在桌面 → 工作区是整个桌面（不推荐，agent 的活动范围会过大）
+- `dsh-webui.exe` 放在哪个文件夹都可以，与工作区无关
+- 想把某个项目作为工作区，就在 DSH 界面里把它新建为工作区，与 exe 的位置互不影响
+- 挪动 exe、甚至复制成好几份分别运行，都不会改变已有对话或新建对话的工作区
 
-如果你想让 agent 只操作某个项目，就把 exe 放进那个项目文件夹。
+> v1.1.0 及更早版本的界面里显示过一个"工作区"，那其实是启动器按自己所在目录猜出来的值，
+> 从未被 dsh 使用过。v1.1.1 已把它连同整套传值逻辑一并删除。
 
 ## 界面与托盘的行为
 
@@ -184,6 +189,9 @@ cd DSH-WebUI-Windows-launcher
 
 **Q：下载时浏览器提示"文件可能有风险"，或干脆拦下了？**
 A：这是浏览器对**所有 `.exe`** 的常规安全提示，与文件来源是否可信无关——**不是文件损坏，也不是本工具可疑**。处理方式：Edge / Chrome 点下载项旁的 `...` → `保留`；Firefox 在下载面板里点「保留文件」。本启动器完全开源，你可以直接查看 `src/` 下的全部源码，或按下方「从源码构建」自行编译，对照确认这个 exe 就是这些源码的产物。
+
+**Q：exe 必须放在项目文件夹里吗？**
+A：不必。启动器只负责启停 dsh 服务，**工作区完全由 DSH WebUI 管理**——在界面里新建或选择一个工作区，对话就落在那个目录下，与 `dsh-webui.exe` 放在哪里无关。（v1.1.0 及更早版本的界面显示过一个"工作区"，那是启动器按自己所在目录猜出来的值，从未被 dsh 使用；v1.1.1 已删除。）
 
 **Q：双击没反应？**
 A：先确认 `Node.js` 已安装（在终端里跑 `node -v`）。若没有，界面会给出下载地址并自动打开下载页；也可以看日志区。

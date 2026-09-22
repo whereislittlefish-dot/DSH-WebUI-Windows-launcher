@@ -68,21 +68,9 @@ $script:EffectivePort = $Port
 $script:StateFile     = Join-Path $script:StateDir "dsh-web-web-$($script:EffectivePort).json"
 $script:LogFile       = Join-Path $script:StateDir "dsh-web-web-$($script:EffectivePort).log"
 
-# 工作区：单文件 exe 会把本脚本释放到临时目录运行，那时 $PSScriptRoot 无意义，
-# 启动器通过 DSH_WEBUI_WORKSPACE 传入真实目录。没有该变量时按脚本位置推断。
-$script:DefaultWorkspace = $null
-if ($env:DSH_WEBUI_WORKSPACE -and (Test-Path -LiteralPath $env:DSH_WEBUI_WORKSPACE -PathType Container)) {
-    $script:DefaultWorkspace = $env:DSH_WEBUI_WORKSPACE
-}
-if (-not $script:DefaultWorkspace) {
-    $parentDir = Split-Path -Parent $PSScriptRoot
-    if ($parentDir -and (Test-Path -LiteralPath $parentDir -PathType Container)) {
-        $script:DefaultWorkspace = $parentDir
-    } else {
-        $script:DefaultWorkspace = $PSScriptRoot
-    }
-}
-$script:Workspace = $script:DefaultWorkspace
+# v1.1.1：启动器不再掺和 dsh 的工作区。
+# 工作区完全由 DSH WebUI 里新建/选择的工作区决定（新建会话时带 workspaceId）；
+# 服务进程的 cwd 只在"一个工作区都还没有"时作兜底，界面既不显示也不解释它。
 
 # ============================================================ 业务逻辑
 
@@ -101,15 +89,14 @@ function Get-DshWebInstance {
 }
 
 function Get-DshWebStatus {
-    $result = [ordered]@{ Running = $false; Port = $script:EffectivePort; Pid = $null; Workspace = $null }
+    $result = [ordered]@{ Running = $false; Port = $script:EffectivePort; Pid = $null }
     if (Test-Path -LiteralPath $script:StateFile) {
         try {
             $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json
             if ($saved -and $saved.pid -and (Get-Process -Id ([int]$saved.pid) -ErrorAction SilentlyContinue)) {
-                $result.Running   = $true
-                $result.Pid       = [int] $saved.pid
-                $result.Port      = if ($saved.port) { [int] $saved.port } else { $script:EffectivePort }
-                $result.Workspace = $saved.workspace
+                $result.Running = $true
+                $result.Pid     = [int] $saved.pid
+                $result.Port    = if ($saved.port) { [int] $saved.port } else { $script:EffectivePort }
                 return [pscustomobject] $result
             }
         } catch { }
@@ -184,7 +171,7 @@ $xamlText = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
-        Title="DSH WebUI" Width="600" Height="760"
+        Title="DSH WebUI" Width="600" Height="726"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ResizeMode="CanMinimize" FontFamily="Microsoft YaHei UI" TextOptions.TextFormattingMode="Ideal">
@@ -346,7 +333,6 @@ $xamlText = @'
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
 
           <!-- 行1：状态 -->
@@ -375,15 +361,6 @@ $xamlText = @'
             <TextBlock x:Name="TxtPid" Text="34732" FontSize="15" FontWeight="SemiBold"
                        Foreground="{StaticResource Ink}" VerticalAlignment="Center"/>
           </StackPanel>
-
-          <!-- 行3：工作区 -->
-          <TextBlock Grid.Row="2" Grid.Column="0" Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
-                     FontSize="15" Foreground="{StaticResource Muted}" Margin="0,14,0,0" VerticalAlignment="Center"/>
-          <TextBlock Grid.Row="2" Grid.Column="1" Text="工作区：" FontSize="15"
-                     Foreground="{StaticResource Muted}" Margin="10,14,0,0" VerticalAlignment="Center"/>
-          <TextBlock Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="4" x:Name="TxtWorkspace"
-                     Text="__WORKSPACE__" FontSize="15" Foreground="{StaticResource Ink}"
-                     Margin="0,14,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         </Grid>
 
         <Border Grid.Row="3" Height="1" Background="{StaticResource Border}" Margin="0,20,0,0"/>
@@ -448,7 +425,6 @@ $xamlText = @'
 '@
 
 $xamlText = $xamlText.Replace('Text="3080"', 'Text="' + $script:EffectivePort + '"')
-$xamlText = $xamlText.Replace('Text="__WORKSPACE__"', 'Text="' + $script:Workspace + '"')
 
 $script:appDispatcher = $null
 
@@ -517,7 +493,6 @@ $win.Add_Loaded({
 $badgeBorder = $win.FindName('BadgeBorder')
 $badgeText   = $win.FindName('BadgeText')
 $txtPid      = $win.FindName('TxtPid')
-$txtWs       = $win.FindName('TxtWorkspace')
 $btnMain     = $win.FindName('BtnMain')
 $mainLabel   = $win.FindName('MainLabel')
 $mainIcon    = $win.FindName('MainIcon')
@@ -571,7 +546,6 @@ function Update-UI {
         $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#16A34A')
         $badgeBorder.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#DCFCE7')
         $txtPid.Text = "$($status.Pid)"
-        $txtWs.Text  = if ($status.Workspace) { $status.Workspace } else { $script:Workspace }
         $mainLabel.Text = '停止服务'
         $mainIcon.Text = [char]0xE71A
         $btnMain.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#DC2626')
@@ -582,7 +556,6 @@ function Update-UI {
         $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#B45309')
         $badgeBorder.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#FEF3C7')
         $txtPid.Text = '—'
-        $txtWs.Text  = $script:Workspace
         $mainLabel.Text = '取消安装'
         $mainIcon.Text = [char]0xE711
         $btnMain.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#B45309')
@@ -592,7 +565,6 @@ function Update-UI {
         $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#6B7280')
         $badgeBorder.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#F3F4F6')
         $txtPid.Text = '—'
-        $txtWs.Text  = $script:Workspace
         $mainLabel.Text = '启动服务'
         $mainIcon.Text = [char]0xE768
         $btnMain.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#2563EB')
@@ -951,16 +923,18 @@ function Start-DshService {
         }
         Remove-Item -LiteralPath $script:LogFile -Force -ErrorAction SilentlyContinue
 
+        # 不指定 -WorkingDirectory：node 继承启动器钉好的 cwd（exe 所在目录）。
+        # dsh 的工作区由 WebUI 里新建/选择的工作区决定，跟这个 cwd 没有关系。
         $proc = Start-Process -FilePath 'node' `
             -ArgumentList @($entry, 'web', '--no-open', '--port', "$($script:EffectivePort)") `
-            -WorkingDirectory $script:Workspace -WindowStyle Hidden `
+            -WindowStyle Hidden `
             -RedirectStandardOutput $script:LogFile -RedirectStandardError "$($script:LogFile).err" `
             -PassThru
 
         $state = [ordered]@{
             pid = $proc.Id; port = $script:EffectivePort
             url = "http://127.0.0.1:$($script:EffectivePort)"
-            workspace = $script:Workspace; log = $script:LogFile; startedAt = (Get-Date).ToString('s')
+            log = $script:LogFile; startedAt = (Get-Date).ToString('s')
         }
         $state | ConvertTo-Json | Set-Content -LiteralPath $script:StateFile -Encoding UTF8
         Write-UILog ("进程已启动（PID {0}），等待就绪 ..." -f $proc.Id)
@@ -1116,7 +1090,6 @@ $win.Add_ContentRendered({
             ("[{0}] DSH WebUI 启动诊断" -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
             ("AppUserModelID : {0}" -f $script:AumidStatus)
             ("窗口图标       : {0}" -f $iconDesc)
-            ("工作区         : {0}" -f $script:Workspace)
         )
         Set-Content -LiteralPath (Join-Path $script:StateDir 'ui-diagnostics.log') -Value $diagLines -Encoding UTF8
     }

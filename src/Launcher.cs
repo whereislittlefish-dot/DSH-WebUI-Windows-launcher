@@ -72,8 +72,10 @@ internal static class Launcher
             psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\"";
             psi.UseShellExecute = false;
             psi.CreateNoWindow = true;
+            // 只把子进程的工作目录钉在 exe 所在目录，让 cwd 确定；
+            // 不再用环境变量把目录传给界面脚本：v1.1.1 起启动器不掺和 dsh 的工作区
+            // （工作区完全由 DSH WebUI 里新建/选择的工作区决定，服务进程的 cwd 不影响它）。
             psi.WorkingDirectory = launchDir;
-            psi.EnvironmentVariables["DSH_WEBUI_WORKSPACE"] = launchDir;
 
             Process p = Process.Start(psi);
             if (p == null)
