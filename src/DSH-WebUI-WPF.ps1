@@ -68,6 +68,14 @@ $script:EffectivePort = $Port
 $script:StateFile     = Join-Path $script:StateDir "dsh-web-web-$($script:EffectivePort).json"
 $script:LogFile       = Join-Path $script:StateDir "dsh-web-web-$($script:EffectivePort).log"
 
+# 界面版本号：显示在标题栏，并写进 ui-diagnostics.log——排障或反馈时一眼能确认用的是哪一版。
+# 发版时这里要跟着 README 徽章和 git tag 一起改。
+$script:AppVersion = 'v1.1.2'
+
+# netstat 探测结果缓存（见 Get-DshWebInstance）：界面每隔几秒刷新一次状态，
+# 没有缓存时每次都要拉起一个 netstat 进程，白白消耗 CPU。
+$script:ProbeCache = $null
+
 # v1.1.1：启动器不再掺和 dsh 的工作区。
 # 工作区完全由 DSH WebUI 里新建/选择的工作区决定（新建会话时带 workspaceId）；
 # 服务进程的 cwd 只在"一个工作区都还没有"时作兜底，界面既不显示也不解释它。
@@ -75,8 +83,24 @@ $script:LogFile       = Join-Path $script:StateDir "dsh-web-web-$($script:Effect
 # ============================================================ 业务逻辑
 
 function Get-DshWebInstance {
-    param([int] $ProbePort, [string[]] $Snapshot)
-    if (-not $Snapshot) { $Snapshot = & netstat -ano 2>$null }
+    param([int] $ProbePort, [string[]] $Snapshot, [switch] $Force)
+    if ($Snapshot) {
+        # 调用方已经有一份 netstat 快照（例如启动前的残留扫描），直接用，不走缓存。
+    }
+    else {
+        # v1.1.2：带 5 秒缓存。界面定时刷新时「服务没在跑」只有这一条路径，
+        # 原来每秒都会拉起一个 netstat 进程；缓存后最多 5 秒一次。
+        # 用户操作（启动/停止/点刷新）一律带 -Force 立即重探，手感不变。
+        # 探测本身刻意不写日志：它每几秒发生一次，写进日志区会把用户信息刷掉。
+        $now = Get-Date
+        if (-not $Force -and $script:ProbeCache -and (($now - $script:ProbeCache.Time).TotalSeconds -lt 5)) {
+            $Snapshot = $script:ProbeCache.Snapshot
+        }
+        else {
+            $Snapshot = & netstat -ano 2>$null
+            $script:ProbeCache = [pscustomobject]@{ Time = $now; Snapshot = $Snapshot }
+        }
+    }
     $hit = $Snapshot | Select-String -Pattern ":$ProbePort\s" | Select-String -Pattern 'LISTENING'
     if (-not $hit) { return $null }
     $ownerPid = ($hit[0].Line -split '\s+')[-1]
@@ -89,6 +113,7 @@ function Get-DshWebInstance {
 }
 
 function Get-DshWebStatus {
+    param([switch] $Force)
     $result = [ordered]@{ Running = $false; Port = $script:EffectivePort; Pid = $null }
     if (Test-Path -LiteralPath $script:StateFile) {
         try {
@@ -101,7 +126,7 @@ function Get-DshWebStatus {
             }
         } catch { }
     }
-    $inst = Get-DshWebInstance -ProbePort $script:EffectivePort
+    $inst = Get-DshWebInstance -ProbePort $script:EffectivePort -Force:$Force
     if ($inst -and $inst.Kind -eq 'dsh') { $result.Running = $true; $result.Pid = $inst.Pid }
     return [pscustomobject] $result
 }
@@ -306,6 +331,8 @@ $xamlText = @'
                        Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
             <TextBlock Text="DSH WebUI" FontSize="21" FontWeight="SemiBold"
                        Foreground="{StaticResource Ink}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+            <TextBlock Text="__VERSION__" FontSize="12.5" Foreground="{StaticResource Muted}"
+                       Margin="8,0,0,5" VerticalAlignment="Bottom"/>
           </StackPanel>
 
           <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
@@ -425,6 +452,7 @@ $xamlText = @'
 '@
 
 $xamlText = $xamlText.Replace('Text="3080"', 'Text="' + $script:EffectivePort + '"')
+$xamlText = $xamlText.Replace('Text="__VERSION__"', 'Text="' + $script:AppVersion + '"')
 
 $script:appDispatcher = $null
 
@@ -487,6 +515,21 @@ $win.Add_Loaded({
         [void] [Win32Window]::ShowWindow($script:winHandle, 5)   # 5 = SW_SHOW
         [void] [Win32Window]::SetForegroundWindow($script:winHandle)
     } catch { }
+
+    # v1.1.2：窗口高度写死 726 DIP，在 768p（工作区约 728 DIP）或 150% 缩放的小屏上
+    # 会顶满甚至超出屏幕底部，主按钮点不到。这里按当前屏幕的可用工作区设上限：
+    #   - 屏幕够高 → MaxHeight 大于 726，窗口保持原尺寸，观感不变；
+    #   - 屏幕不够高 → 窗口被压到工作区内，居中的内容可能略有裁剪，但主按钮始终可点。
+    # 同时加一道 MinWidth/MinHeight 下限，避免以后放开缩放时被拖成不可用的小尺寸。
+    try {
+        $wa = [System.Windows.SystemParameters]::WorkArea
+        $limH = $wa.Height - 16
+        $limW = $wa.Width - 16
+        if ($limH -gt 0) { $win.MaxHeight = [Math]::Max(420, $limH) }
+        if ($limW -gt 0) { $win.MaxWidth = [Math]::Max(360, $limW) }
+        $win.MinWidth = 480
+        $win.MinHeight = 520
+    } catch { }
 })
 
 # 命名元素
@@ -508,10 +551,11 @@ function Write-UILog {
     param([string] $Message)
     if (-not $Message) { return }
     $logItems.Add(("[{0}] {1}" -f (Get-Date).ToString('HH:mm:ss'), $Message))
+    # 只保留最近 300 条：窗口开一整天时日志会无限累积，滚动和重绘都会变慢。
+    while ($logItems.Count -gt 300) { $logItems.RemoveAt(0) }
     $logScroll.ScrollToEnd()
 }
 
-#>
 function Update-SetupUI {
     $st = $script:InstallState
     if ($st.Phase -eq 'installing') {
@@ -540,7 +584,8 @@ function Update-SetupUI {
 #>
 
 function Update-UI {
-    $status = Get-DshWebStatus
+    param([switch] $Force)
+    $status = Get-DshWebStatus -Force:$Force
     if ($status.Running) {
         $badgeText.Text = '运行中'
         $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#16A34A')
@@ -640,7 +685,7 @@ $btnMain.Add_Click({
         return
     }
 
-    $status = Get-DshWebStatus
+    $status = Get-DshWebStatus -Force
     if ($status.Running) { Stop-DshService }
     else                 { Start-DshService }
 })
@@ -660,7 +705,7 @@ $btnOpen.Add_Click({
     else { Write-UILog '服务尚未运行，请先点「启动服务」' }
 })
 
-$btnRefresh.Add_Click({ Update-UI; Write-UILog '状态已刷新' })
+$btnRefresh.Add_Click({ Update-UI -Force; Write-UILog '状态已刷新' })
 
 # ==================================================== Node.js 与 dsh 的安装流程
 # 目标：首次启动时把「装 Node / 装 dsh」的每一步都显示给用户，
@@ -1041,7 +1086,10 @@ $win.Add_Closing({
 })
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
-$timer.Interval = [TimeSpan]::FromSeconds(1)
+# v1.1.2：原来 1 秒一次，现在 3 秒一次。服务在跑时读 state 文件已经很便宜，
+# 服务没在跑时靠 Get-DshWebInstance 的 5 秒 netstat 缓存兜住，所以这里放宽不影响手感，
+# 但闲时几乎不再有规律性的进程创建。用户操作后都走 Update-UI -Force，立即重探。
+$timer.Interval = [TimeSpan]::FromSeconds(3)
 $timer.Add_Tick({ Update-UI })
 $timer.Start()
 
@@ -1081,7 +1129,7 @@ try {
 catch { Write-UILog ("加载 app.ico 失败：{0}" -f $_.Exception.Message) }
 
 $win.Add_ContentRendered({
-    Write-UILog '欢迎使用 DSH WebUI'
+    Write-UILog ("欢迎使用 DSH WebUI {0}" -f $script:AppVersion)
     Write-UILog '点主按钮即可启动或停止服务'
     # 任务栏/窗口图标的诊断：换图标或任务栏图标不对时先看这两行，
     # 同时落盘到 %LOCALAPPDATA%\dsh-web-launcher\ui-diagnostics.log 便于事后排查
@@ -1094,6 +1142,7 @@ $win.Add_ContentRendered({
         }
         $diagLines = @(
             ("[{0}] DSH WebUI 启动诊断" -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+            ("界面版本       : {0}" -f $script:AppVersion)
             ("AppUserModelID : {0}" -f $script:AumidStatus)
             ("窗口图标       : {0}" -f $iconDesc)
         )
