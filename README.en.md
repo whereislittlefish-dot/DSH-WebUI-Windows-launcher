@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  This project is built entirely with dsh, purely out of personal working habits.
+  This is a personal, unofficial project — built entirely with dsh, purely for my own working habits.
 </p>
 
 <p align="center">
