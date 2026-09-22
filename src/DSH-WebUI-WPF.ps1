@@ -293,8 +293,8 @@ $xamlText = @'
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- 标题栏：左侧图标+标题可拖动，右侧是最小化/关闭（固定命中区，便于点击） -->
-        <Grid Grid.Row="0" Background="Transparent">
+        <!-- 标题栏：整行都可拖动（含中间的空白区）；右侧是最小化/关闭（固定命中区，便于点击） -->
+        <Grid Grid.Row="0" x:Name="TitleBarArea" Background="Transparent">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="*"/>
@@ -578,12 +578,18 @@ function Update-UI {
 
 $win.Add_MouseLeftButtonDown({ })
 
-$titleBar = $win.FindName('TitleBar')
-$btnMin   = $win.FindName('BtnMin')
-$btnClose = $win.FindName('BtnClose')
+$titleBarArea = $win.FindName('TitleBarArea')
+$btnMin       = $win.FindName('BtnMin')
+$btnClose     = $win.FindName('BtnClose')
 
-if ($titleBar) {
-    $titleBar.Add_MouseLeftButtonDown({
+# 拖动：挂到**整个标题栏行**上。原先只挂在 x:Name="TitleBar" 那个 StackPanel（Auto 宽度、
+# 只包住图标和"DSH WebUI"两个字）上，于是只有点在文字笔画上才能拖，标题栏中间的空白区
+# 完全没有背景、不参与命中测试，按住也拖不动。
+# 现在这个 Grid 自带 Background="Transparent"，整行（含空白）都能接收鼠标。
+# 右侧的最小化/关闭按钮不受影响：ButtonBase 会在 MouseLeftButtonDown 上把事件标记为已处理，
+# 不会冒泡到这个处理器。
+if ($titleBarArea) {
+    $titleBarArea.Add_MouseLeftButtonDown({
         param($s, $e)
         if ($e.ButtonState -eq [System.Windows.Input.MouseButtonState]::Pressed) {
             try { $win.DragMove() } catch { }
