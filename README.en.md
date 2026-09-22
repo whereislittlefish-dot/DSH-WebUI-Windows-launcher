@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  This project is built entirely with dsh, purely out of personal working habits.
+</p>
+
+<p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
   <img alt="Version" src="https://img.shields.io/badge/version-v1.1.1-2563EB.svg">
