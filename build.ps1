@@ -75,6 +75,20 @@ foreach ($f in @($ps1, $ico, $cs)) {
     Write-Host ("  {0,8} bytes  {1}" -f (Get-Item -LiteralPath $f).Length, $f)
 }
 
+# src/DSH-WebUI-WPF.ps1 必须是「带 BOM 的 UTF-8」：PowerShell 5.1 读无 BOM 的
+# UTF-8 会按 GBK 解码，中文被拆坏后脚本启动即报「意外的属性 CmdletBinding」。
+# 编辑器（含自动改写文件的工具）会把 BOM 悄悄剥掉，所以编译前强制校验一次，
+# 免得打出一个"双击就报错"的 exe。
+# 注：私有开发仓库的 build.ps1 一直有这道校验，这里补上以便在公开仓库改源码时也能拦住。
+$head = New-Object byte[] 3
+$fs = [System.IO.File]::OpenRead($ps1)
+try { [void] $fs.Read($head, 0, 3) } finally { $fs.Dispose() }
+if (-not ($head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF)) {
+    throw ("$ps1 缺少 UTF-8 BOM。PowerShell 5.1 会按 GBK 解码中文并报错；" +
+           '请用编辑器另存为「UTF-8 with BOM」后再编译。')
+}
+Write-Host '  [OK] DSH-WebUI-WPF.ps1 带 UTF-8 BOM'
+
 if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue }
 
 Write-Host '== compiling =='
