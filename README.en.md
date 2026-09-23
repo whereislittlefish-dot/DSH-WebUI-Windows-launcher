@@ -28,7 +28,6 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
   <img alt="Version" src="https://img.shields.io/badge/version-v1.1.2-2563EB.svg">
-  <img alt="Size: 101 KB" src="https://img.shields.io/badge/Size-101%20KB-171513.svg">
 </p>
 
 <p align="center">
@@ -41,7 +40,7 @@
 
 | Option | Best for |
 |---|---|
-| **[Direct download: dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)** (101 KB) | Just want to start using it |
+| **[Direct download: dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)** | Just want to start using it |
 | [Releases page](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases) | Browsing version history and packaged builds |
 | [Latest release asset](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases/latest) | Pinning to a specific version |
 
@@ -66,7 +65,7 @@ DeepSeek Harness (`dsh`) serves its browser UI locally through `dsh web`. But it
 This launcher folds all of that into one window:
 
 - **One button** that flips between "Start service" and "Stop service" based on the current state — no commands to remember, no way to click the wrong thing
-- **A single exe** (101 KB) — double-click and go, no console window
+- **A single exe** — double-click and go, no console window
 - **Zero dependencies**: only the .NET Framework and PowerShell that ship with Windows
 - The service runs in a **separate background process**, so closing the window does not stop it
 - Supports **minimizing to the system tray**

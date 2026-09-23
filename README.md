@@ -27,7 +27,6 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
   <img alt="Version" src="https://img.shields.io/badge/version-v1.1.2-2563EB.svg">
-  <img alt="Size: 101 KB" src="https://img.shields.io/badge/Size-101%20KB-171513.svg">
 </p>
 
 <p align="center">
@@ -40,7 +39,7 @@
 
 | 方式 | 适合 |
 |---|---|
-| **[直接下载 dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)**（101 KB）| 只想快点用上 |
+| **[直接下载 dsh-webui.exe](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/raw/main/dsh-webui.exe)** | 只想快点用上 |
 | [Releases 页面](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases) | 想看版本记录、下打包版本 |
 | [最新版 Release 附件](https://github.com/whereislittlefish-dot/DSH-WebUI-Windows-launcher/releases/latest) | 想要固定版本的附件 |
 
@@ -65,7 +64,7 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 这个启动器把那些操作收进一个窗口里：
 
 - **一个按钮**，随状态自动在「启动服务 / 停止服务」之间切换——不需要记命令，也不会点错
-- **单文件 exe**（101 KB），双击即用，不带命令行窗口
+- **单文件 exe**，双击即用，不带命令行窗口
 - **零依赖**：只用 Windows 自带的 .NET Framework 与 PowerShell
 - 服务以**独立后台进程**运行，关掉界面不会停止服务
 - 支持**最小化到系统托盘**
