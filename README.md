@@ -18,7 +18,7 @@
   GitHub 上已有若干 dsh 桌面端项目，它们把 dsh 打包成自带运行时的完整应用（多为 Electron/Tauri），安装体积较大、需要随 dsh 一起更新。<br>
   本项目走的是另一条路：既不改 dsh 源码，也不打包它——<b>只调用你已装好的 <code>dsh web</code></b>，
   管好它的启停，并提供一个按钮界面与托盘。<br>
-  整个程序就是一个 <b>101 KB 的单文件 exe</b>，不含 Node.js、不含 dsh
+  整个程序就是一个 <b>单文件 exe</b>，不含 Node.js、不含 dsh
   （因此需要你自己装好 Node.js 与 dsh，详见下方「前置要求」）；
   dsh 由你用 npm 自行更新，升级 dsh 不影响启动器。
 </p>

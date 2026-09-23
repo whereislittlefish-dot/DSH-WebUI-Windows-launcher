@@ -20,7 +20,7 @@
   This project takes the opposite route: it neither modifies nor bundles dsh —
   it simply drives the <code>dsh web</code> you already have, managing start/stop,
   with a one-button window and a tray icon.<br>
-  The whole program is a <b>single 101 KB exe</b>: no Node.js, no dsh inside;
+  The whole program is a <b>single exe</b>: no Node.js, no dsh inside;
   update dsh with npm whenever you like, and the launcher is unaffected.
 </p>
 
