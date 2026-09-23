@@ -14,6 +14,17 @@
 </p>
 
 <p align="center">
+  <b>How it differs from other dsh desktop apps</b>:
+  There are several desktop clients that package dsh into a self-contained app (mostly Electron/Tauri),
+  with a large install size and updates tied to dsh.<br>
+  This project takes the opposite route: it neither modifies nor bundles dsh —
+  it simply drives the <code>dsh web</code> you already have, managing start/stop,
+  with a one-button window and a tray icon.<br>
+  The whole program is a <b>single 101 KB exe</b>: no Node.js, no dsh inside;
+  update dsh with npm whenever you like, and the launcher is unaffected.
+</p>
+
+<p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
   <img alt="Version" src="https://img.shields.io/badge/version-v1.1.2-2563EB.svg">
