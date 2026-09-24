@@ -70,7 +70,7 @@ $script:LogFile       = Join-Path $script:StateDir "dsh-web-web-$($script:Effect
 
 # 界面版本号：显示在标题栏，并写进 ui-diagnostics.log——排障或反馈时一眼能确认用的是哪一版。
 # 发版时这里要跟着 README 徽章和 git tag 一起改。
-$script:AppVersion = 'v1.2.0'
+$script:AppVersion = 'v1.2.1'
 
 # netstat 探测结果缓存（见 Get-DshWebInstance）：界面每隔几秒刷新一次状态，
 # 没有缓存时每次都要拉起一个 netstat 进程，白白消耗 CPU。
@@ -518,7 +518,7 @@ $xamlText = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
-        Title="DSH WebUI" Width="600" Height="726"
+        Title="DSH WebUI" Width="600" Height="780"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ResizeMode="CanMinimize" FontFamily="Microsoft YaHei UI" TextOptions.TextFormattingMode="Ideal">
@@ -759,6 +759,18 @@ $xamlText = @'
         <!-- 日志 -->
         <Border Grid.Row="6" Height="1" Background="{StaticResource Border}" Margin="0,20,0,0"/>
 
+        <!-- DSH 版本 / 更新入口（v1.2.1）：Row 7 原本空着，正好放这一行。
+             启动时自动检查一次新版本，按钮文案随状态变化；
+             只有「有新版本」与「检查失败」两种状态可点（见 Update-DshUpdateButton）。 -->
+        <Button Grid.Row="7" x:Name="BtnDshUpdate" Style="{StaticResource SecondaryButton}"
+                Margin="0,12,0,0" IsEnabled="False">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock x:Name="DshUpdateIcon" Text="&#xE895;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+            <TextBlock x:Name="DshUpdateLabel" Text="正在检查 DSH 版本 ..." Margin="8,0,0,0" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
+
         <Border Grid.Row="8" Background="#F9FAFB" CornerRadius="8" BorderBrush="{StaticResource Border}"
                 BorderThickness="1" Margin="0,20,0,0" Padding="14,12">
           <ScrollViewer x:Name="LogScroll" VerticalScrollBarVisibility="Auto">
@@ -927,6 +939,9 @@ $mainIcon    = $win.FindName('MainIcon')
 $btnOpen     = $win.FindName('BtnOpen')
 $btnApiKey   = $win.FindName('BtnApiKey')
 $btnRefresh  = $win.FindName('BtnRefresh')
+$btnDshUpdate   = $win.FindName('BtnDshUpdate')
+$dshUpdateLabel = $win.FindName('DshUpdateLabel')
+$dshUpdateIcon  = $win.FindName('DshUpdateIcon')
 $logList     = $win.FindName('LogList')
 $logScroll   = $win.FindName('LogScroll')
 
@@ -953,13 +968,26 @@ function Update-SetupUI {
             $exited = -not $proc
         }
         if (-not $exited) {
-            $btnMain.Content = '取消安装'
+            # v1.2.1 修复（用户实测）：**绝不要**用 $btnMain.Content 覆盖按钮内容 ——
+            # XAML 里它是一个 StackPanel（图标 + 文字两个 TextBlock），一旦被替换成字符串，
+            # MainLabel 就脱离可视树，之后 Update-UI 里所有 $mainLabel.Text 更新都会失效，
+            # 按钮会永远停在「取消升级」，必须重启启动器才恢复。
+            $mainLabel.Text = if ($st.Kind -eq 'update') { '取消升级' } else { '取消安装' }
             return
         }
 
         if (Complete-DshInstall) {
-            # 安装成功 → 继续原来那套启动流程
-            Start-DshService
+            if ($st.Kind -eq 'update') {
+                # 升级成功：按用户要求**不自动启动服务**，只把版本状态刷成"已是最新"
+                $script:DshVersionState.Phase = 'latest'
+                $script:DshVersionState.Installed = $st.TargetVersion
+                $script:DshVersionState.Latest = $st.TargetVersion
+                Update-DshUpdateButton
+            }
+            else {
+                # 首次安装成功 → 继续原来那套启动流程
+                Start-DshService
+            }
         }
     }
 }
@@ -982,12 +1010,13 @@ function Update-UI {
         $btnMain.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#DC2626')
     }
     elseif ($script:InstallState -and $script:InstallState.Phase -eq 'installing') {
-        # 安装 dsh 期间：主按钮变成「取消安装」，徽章显示「安装中」
-        $badgeText.Text = '安装中'
+        # 安装 / 升级 dsh 期间：主按钮变成「取消安装 / 取消升级」，徽章对应显示
+        $isUpd = ($script:InstallState.Kind -eq 'update')
+        $badgeText.Text = if ($isUpd) { '升级中' } else { '安装中' }
         $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#B45309')
         $badgeBorder.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#FEF3C7')
         $txtPid.Text = '—'
-        $mainLabel.Text = '取消安装'
+        $mainLabel.Text = if ($isUpd) { '取消升级' } else { '取消安装' }
         $mainIcon.Text = [char]0xE711
         $btnMain.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#B45309')
     }
@@ -1005,6 +1034,9 @@ function Update-UI {
     if ($script:miToggle) {
         $script:miToggle.Text = if ($status.Running) { '停止服务' } else { '启动服务' }
     }
+
+    # v1.2.1：顺带读一次 dsh 版本检查结果（整个会话只查一次，结果到了就更新那行按钮）
+    Update-DshVersionResult
 
     # 推进安装状态（读取 npm 输出、判断结束、成功后自动继续启动服务）
     Update-SetupUI
@@ -1102,6 +1134,10 @@ $btnOpen.Add_Click({
 # （刻意不用受控 --app 窗口：那是 WebUI 专用的，Key 页面属于用户的日常浏览）。
 $btnApiKey.Add_Click({ [void] (Open-ApiKeyPage) })
 
+# v1.2.1：dsh 版本行——有新版时点击升级；检查失败时点击重试
+# （二次确认对话框在 Invoke-DshUpdate 里，默认按钮是「否」）
+$btnDshUpdate.Add_Click({ Invoke-DshUpdate })
+
 $btnRefresh.Add_Click({ Update-UI -Force; Write-UILog '状态已刷新' })
 
 # ==================================================== Node.js 与 dsh 的安装流程
@@ -1109,6 +1145,8 @@ $btnRefresh.Add_Click({ Update-UI -Force; Write-UILog '状态已刷新' })
 #       并且在真正可以运行时明确提示；安装全程异步，窗口不假死。
 $script:InstallState = [pscustomobject]@{
     Phase      = 'idle'      # idle | installing | done | failed | cancelled
+    Kind       = 'install'   # install | update（v1.2.1：同一个状态机服务两条流程）
+    TargetVersion = $null    # update 时的目标版本，用于完成文案
     Pid        = $null
     LogOffset  = 0           # stdout 已读字节偏移
     ErrOffset  = 0           # stderr 已读字节偏移（npm 把下载进度写在 stderr）
@@ -1119,6 +1157,21 @@ $script:InstallState = [pscustomobject]@{
     LastNote   = 0           # 上次用兜底提示的时间刻度
     EncFallback = $false     # npm 输出不是 UTF-8 时改用系统 ANSI（中文系统为 GBK）
     StartedAt  = $null
+}
+
+# ---------------------------------------------------------------- dsh 版本检测与升级（v1.2.1）
+# 目标：让"能装 dsh 却不能升 dsh"这个缺口闭合，同时**不打扰、不多联网**：
+#   · 只在**启动器启动时检查一次**（整个会话不再重复访问 npm）；
+#   · 检查失败静默处理（只在日志写一行），绝不弹窗；
+#   · 升级必须由用户点按钮 + 二次确认，且升级前自动停服务、升级后**不自动重启**；
+#   · README 里"不联网"的措辞随之改为"除启动时检查一次 dsh 新版本外，不联网、无遥测"。
+$script:DshVersionState = [pscustomobject]@{
+    Phase     = 'idle'    # idle | checking | latest | outdated | failed | nosh
+    Installed = $null
+    Latest    = $null
+    Pid       = $null
+    OutPath   = $null
+    CheckedAt = $null
 }
 
 $script:NodeUrl = 'https://nodejs.org/zh-cn/download'
@@ -1160,6 +1213,226 @@ function Find-NodeRuntime {
     return $result
 }
 
+# ---------------------------------------------------------------- dsh 版本检测与升级（v1.2.1）
+
+# 读本机已安装的 dsh 版本（直接读 npm 全局包里的 package.json：不启进程、不联网）
+function Get-DshInstalledVersion {
+    $pkg = Join-Path $env:APPDATA 'npm\node_modules\@deepseek-ai\dsh\package.json'
+    if (-not (Test-Path -LiteralPath $pkg)) { return $null }
+    try { return [string] ((Get-Content -LiteralPath $pkg -Raw | ConvertFrom-Json).version) }
+    catch { return $null }
+}
+
+<#
+    判断 $Latest 是否比 $Installed 新。
+    刻意**不用字符串比较**（那样 0.1.5-rc.10 会被判成比 rc.9 旧），
+    而是拆成 主.次.补 + 预发布后缀：主版本相同、都带 -rc.N 时比尾部数字。
+    正式版优先于预发布；无法解析时保守地认为"不同即更新"（提示里两个版本号都写出来，
+    用户自己能判断）。
+#>
+function Test-DshNewerVersion {
+    param([string] $Installed, [string] $Latest)
+    if (-not $Installed -or -not $Latest -or $Installed -eq $Latest) { return $false }
+    $rx = '^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$'
+    $a = [regex]::Match($Installed, $rx); $b = [regex]::Match($Latest, $rx)
+    if (-not $a.Success -or -not $b.Success) { return $true }
+    $an = @([int] $a.Groups[1].Value, [int] $a.Groups[2].Value, [int] $a.Groups[3].Value)
+    $bn = @([int] $b.Groups[1].Value, [int] $b.Groups[2].Value, [int] $b.Groups[3].Value)
+    for ($i = 0; $i -lt 3; $i++) {
+        if ($bn[$i] -gt $an[$i]) { return $true }
+        if ($bn[$i] -lt $an[$i]) { return $false }
+    }
+    $ap = if ($a.Groups[4].Success) { $a.Groups[4].Value } else { '' }
+    $bp = if ($b.Groups[4].Success) { $b.Groups[4].Value } else { '' }
+    if ($ap -eq $bp) { return $false }
+    if ($ap -eq '') { return $false }   # 已装正式版、npm 上却是预发布 → 不算更新
+    if ($bp -eq '') { return $true }    # 已装预发布、npm 上已是正式版 → 算更新
+    $da = 0; $db = 0
+    [void][int]::TryParse([regex]::Match($ap, '\d+$').Value, [ref] $da)
+    [void] [int]::TryParse([regex]::Match($bp, '\d+$').Value, [ref] $db)
+    if ($db -ne $da) { return ($db -gt $da) }
+    return $true
+}
+
+<#
+    启动时**只跑一次**的新版本检查。
+    问 npm「最新版是多少」，输出重定向到文件，结果由界面已有的 3 秒定时器读取
+    —— 与安装流程同构（独立进程 + 文件 + 轮询），不用 Start-Job（那会绑在会话上）。
+#>
+function Start-DshVersionCheck {
+    $st = $script:DshVersionState
+    if ($st.Phase -eq 'checking') { return }
+    $st.Phase = 'checking'
+    $st.Installed = Get-DshInstalledVersion
+    if (-not $st.Installed) {
+        # 还没装 dsh：没有可比对象，按钮显示「DSH 尚未安装」
+        $st.Phase = 'nosh'
+        Update-DshUpdateButton
+        return
+    }
+    $node = Find-NodeRuntime
+    if (-not $node.Npm) {
+        $st.Phase = 'failed'
+        Write-UILog '检查 dsh 更新失败：未找到 npm（可点下方按钮重试）'
+        Update-DshUpdateButton
+        return
+    }
+    if (-not (Test-Path -LiteralPath $script:StateDir)) {
+        New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+    }
+    $out = Join-Path $script:StateDir 'dsh-version-check.log'
+    Remove-Item -LiteralPath $out, "$out.err" -Force -ErrorAction SilentlyContinue
+    $quotedNpm = '"' + $node.Npm + '"'
+    try {
+        $proc = Start-Process -FilePath 'cmd.exe' `
+            -ArgumentList @('/d', '/c', "$quotedNpm view @deepseek-ai/dsh version") `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $out -RedirectStandardError "$out.err" -PassThru
+    }
+    catch {
+        $st.Phase = 'failed'
+        Write-UILog ("检查 dsh 更新失败：{0}" -f $_.Exception.Message)
+        Update-DshUpdateButton
+        return
+    }
+    $st.Pid = $proc.Id
+    $st.OutPath = $out
+    $st.CheckedAt = Get-Date
+    Update-DshUpdateButton
+}
+
+# 读取检查结果（由 Update-UI 顺带调用；成功与失败都只写日志，不弹窗）
+function Update-DshVersionResult {
+    $st = $script:DshVersionState
+    if ($st.Phase -ne 'checking' -or -not $st.Pid) { return }
+
+    if (Get-Process -Id $st.Pid -ErrorAction SilentlyContinue) {
+        # 超时保护：网络慢时不无限等（60 秒），到点放弃并允许手动重试
+        if ($st.CheckedAt -and ((Get-Date) - $st.CheckedAt).TotalSeconds -gt 60) {
+            Stop-Process -Id $st.Pid -Force -ErrorAction SilentlyContinue
+            $st.Phase = 'failed'
+            Write-UILog '检查 dsh 更新超时（网络较慢），可点下方按钮重试'
+            Update-DshUpdateButton
+        }
+        return
+    }
+
+    $raw = ''
+    try { if (Test-Path -LiteralPath $st.OutPath) { $raw = [string] (Get-Content -LiteralPath $st.OutPath -Raw) } } catch { }
+    $m = [regex]::Match($raw, '(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)')
+    if (-not $m.Success) {
+        $st.Phase = 'failed'
+        Write-UILog '检查 dsh 更新失败（拿不到版本号，多半是网络或代理问题），可点下方按钮重试'
+        Update-DshUpdateButton
+        return
+    }
+    $st.Latest = $m.Groups[1].Value
+    if (Test-DshNewerVersion -Installed $st.Installed -Latest $st.Latest) {
+        $st.Phase = 'outdated'
+        # 只陈述事实：日志区里没有按钮，写"点下方升级"会误导（用户实测反馈）
+        Write-UILog ("发现 dsh 新版本：{0} → {1}" -f $st.Installed, $st.Latest)
+    }
+    else {
+        $st.Phase = 'latest'
+        Write-UILog ("dsh 已是最新版本（{0}）" -f $st.Installed)
+    }
+    Update-DshUpdateButton
+}
+
+# 按当前状态刷新那行按钮的文案与可用性
+function Update-DshUpdateButton {
+    $st = $script:DshVersionState
+    if (-not $BtnDshUpdate) { return }
+    $brush = { param($hex) [System.Windows.Media.BrushConverter]::new().ConvertFrom($hex) }
+    switch ($st.Phase) {
+        'latest' {
+            $BtnDshUpdate.IsEnabled = $false
+            $DshUpdateLabel.Text = ('当前 DSH 已是最新版本（{0}）' -f $st.Installed)
+            $DshUpdateLabel.Foreground = (& $brush '#16A34A'); $DshUpdateIcon.Foreground = (& $brush '#16A34A')
+        }
+        'outdated' {
+            $BtnDshUpdate.IsEnabled = $true
+            $DshUpdateLabel.Text = ('更新 DSH（{0} → {1}）' -f $st.Installed, $st.Latest)
+            $DshUpdateLabel.Foreground = (& $brush '#2563EB'); $DshUpdateIcon.Foreground = (& $brush '#2563EB')
+        }
+        'failed' {
+            $BtnDshUpdate.IsEnabled = $true
+            $DshUpdateLabel.Text = '检查 DSH 更新失败（点击重试）'
+            $DshUpdateLabel.Foreground = (& $brush '#B45309'); $DshUpdateIcon.Foreground = (& $brush '#B45309')
+        }
+        'nosh' {
+            $BtnDshUpdate.IsEnabled = $false
+            $DshUpdateLabel.Text = 'DSH 尚未安装'
+            $DshUpdateLabel.Foreground = (& $brush '#6B7280'); $DshUpdateIcon.Foreground = (& $brush '#6B7280')
+        }
+        default {
+            $BtnDshUpdate.IsEnabled = $false
+            $DshUpdateLabel.Text = '正在检查 DSH 版本 ...'
+            $DshUpdateLabel.Foreground = (& $brush '#6B7280'); $DshUpdateIcon.Foreground = (& $brush '#6B7280')
+        }
+    }
+}
+
+<#
+    升级前的二次确认（默认按钮是「否」，防误触）。
+    单独抽成函数是为了**可测**：回归测试可以覆盖它，不必真的弹窗。
+#>
+function Confirm-DshUpdate {
+    param([string] $Installed, [string] $Latest)
+    $msg = @"
+将把 dsh 从 $Installed 升级到 $Latest。
+
+· 升级前会先停止 DSH 服务；
+· 升级完成后不会自动重启服务，需要你点「启动服务」；
+· 实际执行的就是官方升级命令：npm install --global @deepseek-ai/dsh@latest
+
+继续吗？
+"@
+    $choice = [System.Windows.MessageBox]::Show(
+        $msg, 'DSH WebUI — 升级 dsh',
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Question,
+        [System.Windows.MessageBoxResult]::No)
+    return ($choice -eq [System.Windows.MessageBoxResult]::Yes)
+}
+
+<#
+    升级 dsh：二次确认 → 停服务 → 复用安装流程执行 npm install @latest。
+    升级完成后**不自动重启服务**（把"什么时候重启"的决定权留给用户）。
+#>
+function Invoke-DshUpdate {
+    $st = $script:DshVersionState
+    if ($st.Phase -eq 'failed') {      # 失败态点击 = 重试检查
+        $st.Phase = 'idle'
+        Start-DshVersionCheck
+        return
+    }
+    if ($st.Phase -ne 'outdated') { return }
+
+    if (-not (Confirm-DshUpdate -Installed $st.Installed -Latest $st.Latest)) {
+        Write-UILog '已取消 dsh 升级。'
+        return
+    }
+
+    $node = Find-NodeRuntime
+    if (-not $node.Npm) {
+        Write-UILog '未找到 npm，无法升级 dsh。'
+        return
+    }
+
+    # npm 会覆盖 dsh 安装目录，服务在跑时可能占用文件 → 先停服务
+    $status = Get-DshWebStatus -Force
+    if ($status.Running) {
+        Write-UILog '升级 dsh 前先停止服务 ...'
+        Stop-DshService
+    }
+
+    $script:InstallState.NpmPath = $node.Npm
+    $script:InstallState.Kind = 'update'
+    $script:InstallState.TargetVersion = $st.Latest
+    Start-DshInstall -Mode update
+}
+
 # 提示用户安装 Node.js（带可点击的下载地址）
 function Show-NodeMissingHint {
     Write-UILog '未检测到 Node.js —— DSH WebUI 需要先安装 Node.js 20 或更高版本。'
@@ -1173,6 +1446,7 @@ function Show-NodeMissingHint {
     之后由 Update-SetupUI 增量读取，实现「安装进度可见」。
 #>
 function Start-DshInstall {
+    param([string] $Mode = 'install')     # install | update（v1.2.1：同一套流程服务两条命令）
     $npm = $script:InstallState.NpmPath
     if (-not $npm -or -not (Test-Path -LiteralPath $npm)) {
         $script:InstallState.Phase = 'failed'
@@ -1185,16 +1459,29 @@ function Start-DshInstall {
     if (-not (Test-Path -LiteralPath $script:StateDir)) {
         New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
     }
-    $logPath = Join-Path $script:StateDir 'npm-install-dsh.log'
-    Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+    $isUpdate = ($Mode -eq 'update')
+    $logPath = if ($isUpdate) {
+        Join-Path $script:StateDir 'npm-update-dsh.log'
+    } else {
+        Join-Path $script:StateDir 'npm-install-dsh.log'
+    }
+    Remove-Item -LiteralPath $logPath, "$logPath.err" -Force -ErrorAction SilentlyContinue
 
-    Write-UILog '开始安装 dsh（首次约 200 MB，需要联网，请耐心等待）...'
-    Write-UILog '安装进度会实时显示在下面；期间窗口可以最小化，不会中断安装。'
+    if ($isUpdate) {
+        Write-UILog ("开始升级 dsh 到 {0} ..." -f $script:InstallState.TargetVersion)
+        Write-UILog '升级进度会实时显示在下面；期间窗口可以最小化，不会中断升级。'
+    }
+    else {
+        Write-UILog '开始安装 dsh（首次约 200 MB，需要联网，请耐心等待）...'
+        Write-UILog '安装进度会实时显示在下面；期间窗口可以最小化，不会中断安装。'
+    }
 
+    # 升级走官方命令 install @latest（比 npm update 更明确，且能一步到最新）
+    $npmArgs = if ($isUpdate) { 'install --global @deepseek-ai/dsh@latest' } else { 'install --global @deepseek-ai/dsh' }
     $quotedNpm = '"' + $npm + '"'
     try {
         $proc = Start-Process -FilePath 'cmd.exe' `
-            -ArgumentList @('/d','/c',"$quotedNpm install --global @deepseek-ai/dsh") `
+            -ArgumentList @('/d','/c',"$quotedNpm $npmArgs") `
             -WindowStyle Hidden `
             -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" `
             -PassThru
@@ -1213,9 +1500,11 @@ function Start-DshInstall {
     $script:InstallState.Progress  = -1
     $script:InstallState.LastNote  = 0
     $script:InstallState.EncFallback = $false
+    $script:InstallState.Kind      = $Mode
     $script:InstallState.StartedAt = Get-Date
     Write-UILog ("npm 进程已启动（PID {0}），正在下载 ..." -f $proc.Id)
-    Write-UILog '（如果想中止安装，再点一次主按钮即可）'
+    if ($isUpdate) { Write-UILog '（如果想中止升级，再点一次主按钮即可）' }
+    else { Write-UILog '（如果想中止安装，再点一次主按钮即可）' }
 }
 
 <#
@@ -1326,6 +1615,16 @@ function Complete-DshInstall {
 
     if ($entry) {
         $st.Phase = 'done'
+        if ($st.Kind -eq 'update') {
+            # 升级完成：按用户要求**不自动重启服务**，只提示（重启时机由用户定）
+            Write-UILog ("dsh 已升级完成，用时 {0} 秒。" -f $elapsed)
+            Write-UILog ("入口：{0}" -f $entry)
+            Write-UILog ("目标版本：{0}；点「启动服务」即可用新版本启动。" -f $st.TargetVersion)
+            if ($script:trayIcon) {
+                try { $script:trayIcon.ShowBalloonTip(2000, 'DSH WebUI', 'dsh 升级完成，请点「启动服务」。', 'Info') } catch { }
+            }
+            return $true
+        }
         Write-UILog ("dsh 安装完成，用时 {0} 秒。" -f $elapsed)
         Write-UILog ("入口：{0}" -f $entry)
         Write-UILog '现在可以运行了，正在继续启动服务 ...'
@@ -1336,7 +1635,14 @@ function Complete-DshInstall {
     }
 
     $st.Phase = 'failed'
-    Write-UILog 'npm 已结束，但仍找不到 dsh 命令，安装可能没有成功。'
+    if ($st.Kind -eq 'update') {
+        Write-UILog 'npm 已结束，但升级可能没有成功（找不到 dsh 命令）。'
+        Write-UILog '必要时可回滚到旧版本（把 <旧版本号> 换成升级前的版本）：'
+        Write-UILog '  npm install --global @deepseek-ai/dsh@<旧版本号>'
+    }
+    else {
+        Write-UILog 'npm 已结束，但仍找不到 dsh 命令，安装可能没有成功。'
+    }
     if ($st.LogPath -and (Test-Path -LiteralPath $st.LogPath)) {
         Write-UILog ("完整安装日志：{0}" -f $st.LogPath)
     }
@@ -1569,7 +1875,8 @@ try {
             $pick = $frames | Sort-Object { [Math]::Abs([int]$_.PixelWidth - 32) } | Select-Object -First 1
             if ($pick) {
                 $win.Icon = $pick
-                Write-UILog ("窗口图标已加载：{0}x{1}（来自 {2}，共 {3} 层）" -f $pick.PixelWidth, $pick.PixelHeight, (Split-Path -Leaf $icoPath), $frames.Count)
+                # 用户反馈：界面日志里这条与启动诊断的「窗口图标」重复，已移除界面提示；
+                # 诊断信息仍写入 %LOCALAPPDATA%\dsh-web-launcher\ui-diagnostics.log。
             }
             else {
                 Write-UILog 'app.ico 里没有可用图层，窗口图标未设置'
@@ -1587,7 +1894,7 @@ $win.Add_ContentRendered({
     # 同时落盘到 %LOCALAPPDATA%\dsh-web-launcher\ui-diagnostics.log 便于事后排查
     $iconDesc = if ($win.Icon) { "$($win.Icon.PixelWidth)x$($win.Icon.PixelHeight)" } else { '未设置' }
     Write-UILog ("任务栏标识：{0}" -f $script:AumidStatus)
-    Write-UILog ("窗口图标：{0}" -f $iconDesc)
+    # 「窗口图标」同样只在 ui-diagnostics.log 里保留（下面的 diagLines），界面日志不再重复提示
     try {
         if (-not (Test-Path -LiteralPath $script:StateDir)) {
             New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
@@ -1605,6 +1912,12 @@ $win.Add_ContentRendered({
 
     # 窗口若被建成隐藏的，这里显式显示并提到前台（Show-MainWindow 内含守卫）
     [void] (Show-MainWindow)
+
+    # v1.2.1：启动时检查一次 dsh 新版本。**整个会话只查这一次**（唯一的联网行为），
+    # 失败静默（只写一行日志），不弹窗、不阻塞界面。
+    try { Start-DshVersionCheck }
+    catch { Write-UILog ("检查 dsh 更新失败：{0}" -f $_.Exception.Message) }
+
     try {
         $win.Topmost = $true
         $win.Topmost = $false
@@ -1835,6 +2148,51 @@ if ($env:DSH_WEBUI_SELFTEST) {
                 $hasTrayItem = [bool] ($script:trayMenu -and @($script:trayMenu.Items | Where-Object { $_.Text -eq 'DS开放平台' }).Count)
                 $m = ("SELFTEST api-key -> 主界面按钮={0} 托盘菜单项={1} 目标=https://platform.deepseek.com/" -f `
                         [bool] $btnApiKey, $hasTrayItem)
+                Write-UILog $m; Write-SelfTestLog $m
+            }
+            'dsh-version' {
+                # v1.2.1 只读：报告 dsh 版本检测状态与那行按钮的文案。
+                # 不触发检查、不升级（自检绝不改环境）。
+                $st = $script:DshVersionState
+                $m = ("SELFTEST dsh-version -> phase={0} installed={1} latest={2} 版本行可点={3}" -f `
+                        $st.Phase, $st.Installed, $st.Latest, $btnDshUpdate.IsEnabled)
+                Write-UILog $m; Write-SelfTestLog $m
+                $m2 = ("SELFTEST dsh-update-button -> '{0}'" -f $dshUpdateLabel.Text)
+                Write-UILog $m2; Write-SelfTestLog $m2
+            }
+            'btn-structure' {
+                # v1.2.1 防回归（用户实测缺陷）：主按钮的 Content 必须**始终是那个 StackPanel**
+                # （含 MainIcon / MainLabel）。曾经的写法 `$btnMain.Content = '取消安装'` 会把整个
+                # StackPanel 换成字符串，MainLabel 因此脱离可视树，之后所有文案更新失效 ——
+                # 表现为"升级完成后按钮一直显示取消升级，必须重启启动器"。
+                $isPanel = ($btnMain.Content -is [System.Windows.Controls.StackPanel])
+                $inTree  = ($null -ne $mainLabel.Parent)
+                $m = ("SELFTEST btn-structure -> Content类型={0} 是StackPanel={1} MainLabel有父级={2} 当前文案='{3}'" -f `
+                        $btnMain.Content.GetType().Name, $isPanel, $inTree, $mainLabel.Text)
+                Write-UILog $m; Write-SelfTestLog $m
+            }
+            'btn-label-cycle' {
+                # v1.2.1 修复验证：模拟「升级中 → 升级完成」，主按钮文案必须能切回去
+                # （用户实测缺陷正是"完成后仍停在取消升级"）。
+                # 技巧：把 InstallState.Pid 指向当前进程，让 Update-SetupUI 认为"npm 还在跑"，
+                # 从而只设置文案、不会真的去走 Complete-DshInstall。
+                $origPhase = $script:InstallState.Phase
+                $origKind = $script:InstallState.Kind
+                $origPid = $script:InstallState.Pid
+                $script:InstallState.Kind = 'update'
+                $script:InstallState.Phase = 'installing'
+                $script:InstallState.Pid = $PID
+                Update-UI
+                $during = $mainLabel.Text
+                $script:InstallState.Phase = 'done'
+                $script:InstallState.Pid = $null
+                Update-UI
+                $after = $mainLabel.Text
+                $script:InstallState.Phase = $origPhase
+                $script:InstallState.Kind = $origKind
+                $script:InstallState.Pid = $origPid
+                Update-UI
+                $m = ("SELFTEST btn-label-cycle -> 升级中='{0}' 完成后='{1}'（期望：取消升级 / 启动服务或停止服务）" -f $during, $after)
                 Write-UILog $m; Write-SelfTestLog $m
             }
             default {
