@@ -182,7 +182,7 @@ if ($script:RunningInstance) {
 
 # 界面版本号：显示在标题栏，并写进 ui-diagnostics.log——排障或反馈时一眼能确认用的是哪一版。
 # 发版时这里要跟着 README 徽章和 git tag 一起改。
-$script:AppVersion = 'v1.2.2'
+$script:AppVersion = 'v1.2.3'
 
 # netstat 探测结果缓存（见 Get-DshWebInstance）：界面每隔几秒刷新一次状态，
 # 没有缓存时每次都要拉起一个 netstat 进程，白白消耗 CPU。
@@ -600,6 +600,58 @@ function Find-Dsh {
         }
     }
     return $null
+}
+
+<#
+    结束一个进程**及其整棵子进程树**（v1.2.3 修复）。
+
+    为什么不能用 Stop-Process：安装/升级 dsh 走的是 `cmd /c "npm.cmd …"`，
+    Start-Process 拿到的 PID 是 **cmd.exe**，npm 是它的子进程。
+    只杀 cmd.exe 的话，npm（node）会继续在后台把包装完 —— 用户点了「取消安装」
+    却其实什么也没取消掉（2026-09-24 实测：杀掉 cmd.exe 后其 node 子进程仍然存活）。
+    `taskkill /T` 才会连子进程一起结束。
+    刻意保持静默：进程可能已经退出、也可能拒绝访问，这些都不该打扰用户。
+#>
+function Stop-ProcessTree {
+    param([int] $ProcessId)
+    if (-not $ProcessId) { return }
+    try { & taskkill.exe /T /F /PID $ProcessId 2>&1 | Out-Null } catch { }
+    # 兜底：taskkill 不可用或部分失败时，至少把父进程本身结束掉
+    try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+}
+
+<#
+    列出"可能装着 dsh 的 package.json"候选路径，按可靠性排序（v1.2.3）。
+
+    为什么不能只读默认路径：`Find-Dsh` 是走 PATH 找 dsh 的，
+    而版本检查原先硬编码 `%APPDATA%\npm\node_modules\…`。两者不一致时
+    （自定义 npm prefix、pnpm、volta 等），会出现
+    「服务明明能启动，却显示『DSH 尚未安装』且按钮不可点」的矛盾。
+    这里改成先从 PATH 上**实际的** dsh 反推包目录，最后才回退默认全局路径。
+#>
+function Get-DshPackageJsonCandidates {
+    $list = New-Object System.Collections.Generic.List[string]
+    try {
+        $dsh = Find-Dsh
+        if ($dsh) {
+            # dsh.cmd 一般在 <prefix>\dsh.cmd，包在 <prefix>\node_modules\@deepseek-ai\dsh\
+            $prefix = Split-Path -Parent $dsh
+            if ($prefix) { [void] $list.Add((Join-Path $prefix 'node_modules\@deepseek-ai\dsh\package.json')) }
+            # 更准的一条：从 dsh.cmd 指向的入口（通常是 <包根>\lib\bin.js）反推包根
+            $entry = Resolve-DshEntry -DshCmdPath $dsh
+            if ($entry) {
+                $pkgDir = Split-Path -Parent (Split-Path -Parent $entry)
+                if ($pkgDir) { [void] $list.Add((Join-Path $pkgDir 'package.json')) }
+            }
+        }
+    }
+    catch { }
+    # 回退：npm 全局安装的默认位置（绝大多数用户走这条）
+    [void] $list.Add((Join-Path $env:APPDATA 'npm\node_modules\@deepseek-ai\dsh\package.json'))
+    $seen = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $list) { if ($p -and -not $seen.ContainsKey($p)) { $seen[$p] = $true; [void] $out.Add($p) } }
+    return $out
 }
 
 <#
@@ -1253,7 +1305,9 @@ $btnMain.Add_Click({
         $cancelled = $script:InstallState.PkgCount
         $script:InstallState.ProgressIndex = -1
         if ($script:InstallState.Pid) {
-            Stop-Process -Id $script:InstallState.Pid -Force -ErrorAction SilentlyContinue
+            # v1.2.3 修复：这个 PID 是 cmd.exe，npm 是它的子进程。只杀 cmd.exe 的话
+            # npm 会在后台继续把包装完 —— 用户以为取消了，其实没有（实测确认过）。
+            Stop-ProcessTree -ProcessId ([int] $script:InstallState.Pid)
         }
         $script:InstallState.Phase = 'cancelled'
         Write-UILog ("已取消 dsh 安装（本次已获取 {0} 个包）。" -f $cancelled)
@@ -1381,10 +1435,18 @@ function Find-NodeRuntime {
 
 # 读本机已安装的 dsh 版本（直接读 npm 全局包里的 package.json：不启进程、不联网）
 function Get-DshInstalledVersion {
-    $pkg = Join-Path $env:APPDATA 'npm\node_modules\@deepseek-ai\dsh\package.json'
-    if (-not (Test-Path -LiteralPath $pkg)) { return $null }
-    try { return [string] ((Get-Content -LiteralPath $pkg -Raw | ConvertFrom-Json).version) }
-    catch { return $null }
+    # v1.2.3：遍历候选路径（PATH 上**实际的** dsh 优先，默认全局路径兜底）。
+    # 这样自定义 npm prefix / pnpm / volta 装的 dsh 也能正确显示版本，
+    # 不会再出现"服务能启动、却显示 DSH 尚未安装"的矛盾。理由详见 Get-DshPackageJsonCandidates。
+    foreach ($pkg in (Get-DshPackageJsonCandidates)) {
+        if (-not $pkg -or -not (Test-Path -LiteralPath $pkg)) { continue }
+        try {
+            $v = [string] ((Get-Content -LiteralPath $pkg -Raw | ConvertFrom-Json).version)
+            if ($v) { return $v }
+        }
+        catch { }
+    }
+    return $null
 }
 
 <#
@@ -1473,7 +1535,7 @@ function Update-DshVersionResult {
     if (Get-Process -Id $st.Pid -ErrorAction SilentlyContinue) {
         # 超时保护：网络慢时不无限等（60 秒），到点放弃并允许手动重试
         if ($st.CheckedAt -and ((Get-Date) - $st.CheckedAt).TotalSeconds -gt 60) {
-            Stop-Process -Id $st.Pid -Force -ErrorAction SilentlyContinue
+            Stop-ProcessTree -ProcessId ([int] $st.Pid)   # v1.2.3：连 npm 子进程一起结束，别留后台进程
             $st.Phase = 'failed'
             Write-UILog '检查 dsh 更新超时（网络较慢），可点下方按钮重试'
             Update-DshUpdateButton
@@ -2516,6 +2578,19 @@ if ($env:DSH_WEBUI_SELFTEST) {
                 try { $h = [int] ([System.Windows.Interop.WindowInteropHelper]::new($win).Handle) } catch { }
                 $m2 = ("SELFTEST single-instance-window -> 本窗口hwnd={0} 状态文件属于本进程={1}" -f `
                         $h, [bool] ($st -and [int] $st.pid -eq $PID))
+                Write-UILog $m2; Write-SelfTestLog $m2
+            }
+            'dsh-version-path' {
+                # v1.2.3 只读：报告"版本号是从哪个 package.json 读出来的"以及 Find-Dsh 的结果，
+                # 排查"服务能启动、却显示 DSH 尚未安装"这类矛盾时看这一行
+                $v = Get-DshInstalledVersion
+                $cands = @(Get-DshPackageJsonCandidates)
+                $hit = @($cands | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
+                $m = ("SELFTEST dsh-version-path -> 版本={0} 命中={1} 候选数={2}" -f `
+                        $(if ($v) { $v } else { '(未读到)' }), $(if ($hit) { $hit } else { '(都不存在)' }), $cands.Count)
+                Write-UILog $m; Write-SelfTestLog $m
+                $dshPath = Find-Dsh
+                $m2 = ("SELFTEST dsh-executable -> {0}" -f $(if ($dshPath) { $dshPath } else { '(PATH 上没找到 dsh)' }))
                 Write-UILog $m2; Write-SelfTestLog $m2
             }
             default {

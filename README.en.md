@@ -117,7 +117,7 @@ and the download page opens automatically.
 
 - The install runs as an **asynchronous, separate process**: the UI stays responsive and the window can be minimized;
 - Live `已获取 N 个包，用时 M 秒，最近：<package>` — **one line refreshed in place** instead of flooding the log (before any package body is fetched it shows `正在解析依赖信息（N 条）`); npm errors (`npm ERR!`, `ETIMEDOUT`, `ECONNRESET`, …) are passed through verbatim;
-- While installing, the main button becomes "**Cancel install**" — click it again to abort;
+- While installing, the main button becomes "**Cancel install**" — click it again to abort (since v1.2.3 this **really terminates the npm process** instead of letting it finish in the background);
 - When it finishes you get an explicit message:
 
   ```
