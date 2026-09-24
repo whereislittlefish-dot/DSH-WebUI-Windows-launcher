@@ -27,15 +27,11 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.1-2563EB.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.2-2563EB.svg">
 </p>
 
 <p align="center">
   <a href="README.md">中文</a> | English
-</p>
-
-<p align="center">
-  <img src="assets/screenshot-main.png" width="420" alt="DSH WebUI launcher main window (v1.2.1)">
 </p>
 
 ---
@@ -77,7 +73,13 @@ This launcher folds all of that into one window:
 - A **"DS Open Platform" shortcut** (in both the window and the tray) that opens the DeepSeek platform so you can get an API key
 - **dsh version check & one-click update** (v1.2.1): one check at startup, shown only when a newer version exists;
   a single click upgrades it — the service is stopped first, and **you decide when to restart it**
-- **Guided first run**: detects Node.js, installs dsh automatically, and shows live install progress
+- **Guided first run**: detects Node.js and installs dsh automatically
+- **Visible install/update progress** (v1.2.2): one log line refreshes in place showing **how many packages
+  have been fetched, the elapsed time, and the most recent package**
+  (the window's own log is in Chinese, e.g. `已获取 486 个包，用时 225 秒，最近：@vscode/ripgrep-win32-x64`) — so you can tell "downloading" from "stuck" at a glance
+- **No accidental second launcher** (v1.2.2): launching it again while it is already running shows an
+  "already running" message and **brings the existing window to the front** — no second window is created,
+  and the running service is never touched
 
 > **This is a third-party tool, not an official DeepSeek component.** It drives `@deepseek-ai/dsh` from the command line and contains none of dsh's own code.
 
@@ -114,12 +116,12 @@ and the download page opens automatically.
 **② Installing dsh (about 200 MB, first run only)**
 
 - The install runs as an **asynchronous, separate process**: the UI stays responsive and the window can be minimized;
-- Live `install progress xx%`; npm errors (`npm ERR!`, `ETIMEDOUT`, `ECONNRESET`, …) are passed through verbatim;
+- Live `已获取 N 个包，用时 M 秒，最近：<package>` — **one line refreshed in place** instead of flooding the log (before any package body is fetched it shows `正在解析依赖信息（N 条）`); npm errors (`npm ERR!`, `ETIMEDOUT`, `ECONNRESET`, …) are passed through verbatim;
 - While installing, the main button becomes "**Cancel install**" — click it again to abort;
 - When it finishes you get an explicit message:
 
   ```
-  dsh installed in 26 seconds.
+  dsh installed in 228 seconds (486 packages fetched).
   Entry: C:\Users\<you>\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js
   Ready to run — continuing to start the service ...
   ```
@@ -256,7 +258,7 @@ A: No. The launcher only starts and stops the dsh service, and **the workspace i
 A: First make sure `Node.js` is installed (run `node -v` in a terminal). If it is missing, the UI shows the download link and opens the page; the log area has details too.
 
 **Q: The UI says "starting" for a long time?**
-A: On first run it is downloading and installing dsh (about 200 MB). The log area keeps showing a percentage; later starts are fast.
+A: On first run it is downloading and installing dsh (about 200 MB; measured ~5 minutes with a cold cache). The log area keeps showing **how many packages have been fetched and the elapsed time** (e.g. `已获取 486 个包，用时 225 秒，最近：…`) — as long as that number keeps growing, the download is healthy. Later starts are fast.
 
 **Q: The taskbar shows the PowerShell icon?**
 A: Fixed in v1.1.0. If it still looks wrong, check `AppUserModelID` and the window icon values in `%LOCALAPPDATA%\dsh-web-launcher\ui-diagnostics.log`; if both are correct it is the Windows icon cache — move or rename the exe and run it again, or sign out once.

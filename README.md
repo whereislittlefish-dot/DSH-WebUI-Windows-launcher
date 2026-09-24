@@ -26,15 +26,11 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.1-2563EB.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.2-2563EB.svg">
 </p>
 
 <p align="center">
   <a href="README.en.md">English</a> | 中文
-</p>
-
-<p align="center">
-  <img src="assets/screenshot-main.png" width="420" alt="DSH WebUI 启动器主界面（v1.2.1）">
 </p>
 
 ---
@@ -77,7 +73,11 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 - **「DS开放平台」快捷入口**（主界面与托盘都有），一键打开 DeepSeek 开放平台去申请 API Key
 - **dsh 版本检查与一键升级**（v1.2.1）：启动时自动检查一次新版本，有新版才提示；
   点一下即可升级——升级前自动停服务，**升级后由你决定何时重启**
-- **首次使用全程有提示**：自动检测 Node.js、自动安装 dsh，并实时显示安装进度
+- **首次使用全程有提示**：自动检测 Node.js、自动安装 dsh
+- **安装/升级进度看得见**（v1.2.2）：日志区用一行原地刷新，显示**已获取的包数量、用时和最近拿到的包**
+  （例如 `已获取 486 个包，用时 225 秒，最近：@vscode/ripgrep-win32-x64`），一眼能看出是"真在下载"还是"卡住了"
+- **不会开出两个启动器**（v1.2.2）：已经开着的时候再双击，会提示「已经在运行」并把**已有的那个窗口叫到前面** ——
+  不会新建窗口，也不会碰到正在运行的服务
 
 > **这是第三方工具，不是 DeepSeek 官方组件。** 它通过命令行调用 `@deepseek-ai/dsh`，不包含 dsh 的任何代码。
 
@@ -114,12 +114,12 @@ PATH 里找不到 `node` 时，会继续探测几个常见安装位置
 **② 安装 dsh（约 200 MB，仅首次）**
 
 - 安装以**独立进程异步执行**，界面保持可交互，窗口可以最小化；
-- 实时显示 `安装进度 xx%`；npm 的报错（`npm ERR!`、`ETIMEDOUT`、`ECONNRESET` 等）原样透出；
+- 实时显示 `已获取 N 个包，用时 M 秒，最近：<包名>`（**一行原地刷新**，不刷屏；包体还没开始下载时先显示 `正在解析依赖信息（N 条）`）；npm 的报错（`npm ERR!`、`ETIMEDOUT`、`ECONNRESET` 等）原样透出；
 - 安装期间主按钮变成「**取消安装**」，再点一次即中止；
 - 完成后会明确提示：
 
   ```
-  dsh 安装完成，用时 26 秒。
+  dsh 安装完成，用时 228 秒（共获取 486 个包）。
   入口：C:\Users\<你>\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js
   现在可以运行了，正在继续启动服务 ...
   ```
@@ -257,7 +257,7 @@ A：不必。启动器只负责启停 dsh 服务，**工作区完全由 DSH WebU
 A：先确认 `Node.js` 已安装（在终端里跑 `node -v`）。若没有，界面会给出下载地址并自动打开下载页；也可以看日志区。
 
 **Q：界面显示"正在启动"很久？**
-A：首次运行正在下载安装 dsh（约 200 MB），日志区会持续显示进度百分比。装完后后续启动很快。
+A：首次运行正在下载安装 dsh（约 200 MB，全新缓存下实测约 5 分钟）。日志区会**持续显示已获取的包数量和用时**（例如 `已获取 486 个包，用时 225 秒，最近：@vscode/ripgrep-win32-x64`）——只要这个数字在涨，就是在正常下载。装完后后续启动很快。
 
 **Q：任务栏图标显示成 PowerShell 的图标？**
 A：v1.1.0 已修复。若仍不对，先看 `%LOCALAPPDATA%\dsh-web-launcher\ui-diagnostics.log`

@@ -31,6 +31,12 @@ if (-not ('Win32Window' -as [type])) {
 public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
 [System.Runtime.InteropServices.DllImport("user32.dll")]
 public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool IsWindow(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool IsWindowVisible(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool FlashWindow(System.IntPtr hWnd, bool bInvert);
 '@
 }
 
@@ -68,9 +74,115 @@ $script:EffectivePort = $Port
 $script:StateFile     = Join-Path $script:StateDir "dsh-web-web-$($script:EffectivePort).json"
 $script:LogFile       = Join-Path $script:StateDir "dsh-web-web-$($script:EffectivePort).log"
 
+# ---------------------------------------------------------------- 单实例（v1.2.2）
+# 为什么需要：Launcher.cs **不转发命令行参数**，所以任何 exe 实例都写死 3080；
+# 双击两次就是两个实例同时管同一个服务 —— 端口都显示 3080，而且任一实例退出都会去停那个服务。
+#
+# 做法：先到者持有命名互斥体，并把窗口句柄写进状态文件；后到者弹一句提示、把已有窗口叫出来，然后自己退出。
+# 用互斥体而不是只看状态文件，是为了抗"同时双击两次"的竞态（互斥体是原子的，状态文件只负责定位窗口）。
+#
+# 旁路：设置 DSH_WEBUI_ALLOW_MULTI=1 可跳过多开限制（自动化测试、或刻意用不同端口并存时用）。
+$script:UiStateFile        = Join-Path $script:StateDir 'launcher-ui.json'
+$script:UiMutexName        = 'Local\DSH-WebUI-Launcher-UI'
+# 跨进程"把窗口叫出来"的信道：已有实例守着这个命名事件（定时器 WaitOne(0)），
+# 后启动的实例 Set 一下，已有窗口就自己 Show + Activate —— 绕开 Windows 前台锁定策略
+# （跨进程 SetForegroundWindow 从后台进程调用会被拒绝，v1.2.0 实测过）。
+$script:UiEventName        = 'Local\DSH-WebUI-Launcher-Activate'
+$script:AllowMultiInstance = [bool] $env:DSH_WEBUI_ALLOW_MULTI
+$script:UiMutex            = $null
+
+function Get-LauncherUiState {
+    if (-not (Test-Path -LiteralPath $script:UiStateFile)) { return $null }
+    try { return (Get-Content -LiteralPath $script:UiStateFile -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+function Set-LauncherUiState {
+    param([int] $Hwnd)
+    try {
+        [ordered]@{
+            pid       = $PID
+            hwnd      = $Hwnd
+            port      = $script:EffectivePort
+            startedAt = (Get-Date).ToString('s')
+        } | ConvertTo-Json | Set-Content -LiteralPath $script:UiStateFile -Encoding UTF8
+    }
+    catch { }
+}
+
+function Clear-LauncherUiState {
+    try {
+        $st = Get-LauncherUiState
+        # 只删自己写的那份，避免把后来者的记录删掉
+        if ($st -and [int] $st.pid -eq $PID) { Remove-Item -LiteralPath $script:UiStateFile -Force -ErrorAction SilentlyContinue }
+    }
+    catch { }
+}
+
+<#
+    抢占单实例互斥体。
+    返回 $null =「我是第一个」（互斥体已持有到进程退出）；否则返回已有实例的状态（可能没有窗口句柄）。
+#>
+function Test-LauncherUiRunning {
+    if ($script:AllowMultiInstance) { return $null }
+    $mutex = New-Object System.Threading.Mutex($false, $script:UiMutexName)
+    $acquired = $false
+    try { $acquired = $mutex.WaitOne(0) }
+    catch [System.Threading.AbandonedMutexException] {
+        # 上一个实例是崩溃退出的 —— 所有权已归我，按「我是第一个」处理
+        $acquired = $true
+    }
+    catch { $acquired = $false }
+    if ($acquired) {
+        $script:UiMutex = $mutex
+        return $null
+    }
+    try { $mutex.Dispose() } catch { }
+    return [pscustomobject]@{ State = (Get-LauncherUiState) }
+}
+
+<#
+    把已在运行的启动器窗口叫出来。
+    ① 主路径：Set 命名事件，让已有实例**自己** Show + Activate（绕开前台锁定策略）；
+    ② 兜底：窗口只是被最小化时直接 SW_RESTORE；不可见时闪一下任务栏，至少告诉用户它在哪。
+#>
+function Show-LauncherUiWindow {
+    param($State)
+    $hwnd = 0
+    if ($State -and $State.hwnd) { $hwnd = [int] $State.hwnd }
+
+    $signalled = $false
+    try {
+        $ev = [System.Threading.EventWaitHandle]::OpenExisting($script:UiEventName)
+        [void] $ev.Set()
+        $ev.Dispose()
+        $signalled = $true
+    }
+    catch { }
+
+    if ($hwnd -le 0) { return $signalled }
+    try { if (-not [Win32Window]::IsWindow([IntPtr] $hwnd)) { return $signalled } } catch { }
+    try { [void] [Win32Window]::ShowWindow([IntPtr] $hwnd, 9) } catch { }          # 9 = SW_RESTORE
+    try { if (-not [Win32Window]::IsWindowVisible([IntPtr] $hwnd)) { [void] [Win32Window]::FlashWindow([IntPtr] $hwnd, $true) } } catch { }
+    return $true
+}
+
+# ---- 启动时判定：已有实例 → 提示 + 唤起它，然后本进程直接退出（不建窗口、不碰服务）
+$script:RunningInstance = Test-LauncherUiRunning
+if ($script:RunningInstance) {
+    $shown = Show-LauncherUiWindow -State $script:RunningInstance.State
+    $text = if ($shown) {
+        'DSH WebUI 启动器已经在运行了，已为你打开它的窗口。'
+    }
+    else {
+        "DSH WebUI 启动器已经在运行了，但没能定位到它的窗口（可能刚刚关闭）。`n请查看任务栏或右下角托盘区。"
+    }
+    try { [void] [System.Windows.MessageBox]::Show($text, 'DSH WebUI', 'OK', 'Information') } catch { }
+    exit 0
+}
+
 # 界面版本号：显示在标题栏，并写进 ui-diagnostics.log——排障或反馈时一眼能确认用的是哪一版。
 # 发版时这里要跟着 README 徽章和 git tag 一起改。
-$script:AppVersion = 'v1.2.1'
+$script:AppVersion = 'v1.2.2'
 
 # netstat 探测结果缓存（见 Get-DshWebInstance）：界面每隔几秒刷新一次状态，
 # 没有缓存时每次都要拉起一个 netstat 进程，白白消耗 CPU。
@@ -127,9 +239,18 @@ public static extern bool SetForegroundWindow(System.IntPtr h);
 
 # 独立 profile 目录：与用户日常浏览器完全隔离。
 # 停止服务时只关进程、**保留目录**（保留登录态与缓存，下次打开更快，也避免反复重建 profile）。
+#
+# v1.2.2 修复（真实踩坑）：目录名必须**带端口**。
+# 原先所有实例共用 `browser-profile`，而窗口的检测/聚焦/关闭全都按 profile 路径匹配进程组，
+# 于是同一台机器上跑两个启动器实例（例如 3080 与 3099）时，后启动的那个会把先启动的那个
+# **正在使用的** WebUI 窗口当成"自己上次遗留的失效窗口"整组关掉 —— 用户正看的界面就没了。
+# 带上端口后每个实例各有各的 profile，"自己的窗口"在定义上就成立了。
+# 同一端口的两个实例仍然共享（这是对的：同一个服务的窗口本来就该是同一个）。
 function Get-WebUIBrowserProfile {
-    $dir = Join-Path $script:StateDir 'browser-profile'
-    if (-not (Test-Path -LiteralPath $dir)) {
+    param([switch] $Legacy)
+    $dir = Join-Path $script:StateDir $(if ($Legacy) { 'browser-profile' } else { "browser-profile-$($script:EffectivePort)" })
+    # Legacy 只用于"探测升级前留下的旧目录"，不去创建它
+    if (-not $Legacy -and -not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
     }
     return $dir
@@ -953,7 +1074,40 @@ function Write-UILog {
     if (-not $Message) { return }
     $logItems.Add(("[{0}] {1}" -f (Get-Date).ToString('HH:mm:ss'), $Message))
     # 只保留最近 300 条：窗口开一整天时日志会无限累积，滚动和重绘都会变慢。
-    while ($logItems.Count -gt 300) { $logItems.RemoveAt(0) }
+    while ($logItems.Count -gt 300) {
+        $logItems.RemoveAt(0)
+        # 安装进度行是"原地刷新"的（见 Write-UILogInPlace），它记着自己所在的索引；
+        # 这里删掉了队首，索引必须同步左移，否则进度会改写错行。
+        $st = $script:InstallState
+        if ($st -and $st.ProgressIndex -ge 0) { $st.ProgressIndex = $st.ProgressIndex - 1 }
+    }
+    $logScroll.ScrollToEnd()
+}
+
+<#
+    写一条"会原地刷新"的日志行（v1.2.2：安装/升级进度用）。
+    npm 设置 --loglevel http 后一次安装会产生上千行输出，若每行都追加，日志区会被
+    瞬间冲走，用户反而什么都看不到。这里始终只占用一行，每次用新内容替换它，
+    看到的就是"一个不断前进的进度"。
+#>
+function Write-UILogInPlace {
+    param([string] $Message)
+    if (-not $Message) { return }
+    $st = $script:InstallState
+    if ($st -and $st.ProgressIndex -ge 0 -and $st.ProgressIndex -eq ($logItems.Count - 1)) {
+        # 进度行仍是最后一行 → 原地替换；时间戳沿用这行建立时的时刻，避免每秒跳动
+        $logItems[$st.ProgressIndex] = ("[{0}] {1}" -f $st.ProgressStamp, $Message)
+    }
+    else {
+        # 还没有进度行，或中途被别的日志（npm 报错等）顶掉了 → 重新占一行
+        if ($st) { $st.ProgressStamp = (Get-Date).ToString('HH:mm:ss') }
+        $logItems.Add(("[{0}] {1}" -f (Get-Date).ToString('HH:mm:ss'), $Message))
+        if ($st) { $st.ProgressIndex = $logItems.Count - 1 }
+        while ($logItems.Count -gt 300) {
+            $logItems.RemoveAt(0)
+            if ($st -and $st.ProgressIndex -ge 0) { $st.ProgressIndex = $st.ProgressIndex - 1 }
+        }
+    }
     $logScroll.ScrollToEnd()
 }
 
@@ -1094,11 +1248,16 @@ $btnMain.Add_Click({
     # 正在安装 dsh 时，主按钮变成「取消安装」
     if ($script:InstallState.Phase -eq 'installing') {
         Write-UILog '正在取消安装 ...'
+        # 先把已读到的 npm 输出收进来，好在取消时告诉用户"已经获取了多少"，不是白等
+        Write-InstallProgress
+        $cancelled = $script:InstallState.PkgCount
+        $script:InstallState.ProgressIndex = -1
         if ($script:InstallState.Pid) {
             Stop-Process -Id $script:InstallState.Pid -Force -ErrorAction SilentlyContinue
         }
         $script:InstallState.Phase = 'cancelled'
-        Write-UILog '已取消 dsh 安装（可用 npm install --global @deepseek-ai/dsh 手动安装）。'
+        Write-UILog ("已取消 dsh 安装（本次已获取 {0} 个包）。" -f $cancelled)
+        Write-UILog '需要时可手动安装：npm install --global @deepseek-ai/dsh'
         Update-UI
         return
     }
@@ -1153,8 +1312,13 @@ $script:InstallState = [pscustomobject]@{
     LogPath    = $null
     NpmPath    = $null
     NpmArgs    = $null
-    Progress   = -1
-    LastNote   = 0           # 上次用兜底提示的时间刻度
+    PkgSet     = $null       # v1.2.2：已获取的包名（去重用的哈希表）
+    PkgCount   = 0           # v1.2.2：已获取的包数
+    LastPkg    = $null       # v1.2.2：最近获取到的包名
+    InfoCount  = 0           # v1.2.2：已获取的依赖元数据条数
+    LastPkgAt  = $null       # v1.2.2：最后一次"包数增加"的时刻
+    ProgressIndex = -1       # v1.2.2：进度行在日志列表里的下标（-1 = 还没建）
+    ProgressStamp = $null    # v1.2.2：进度行的时间戳（原地刷新时保持不变）
     EncFallback = $false     # npm 输出不是 UTF-8 时改用系统 ANSI（中文系统为 GBK）
     StartedAt  = $null
 }
@@ -1469,15 +1633,17 @@ function Start-DshInstall {
 
     if ($isUpdate) {
         Write-UILog ("开始升级 dsh 到 {0} ..." -f $script:InstallState.TargetVersion)
-        Write-UILog '升级进度会实时显示在下面；期间窗口可以最小化，不会中断升级。'
+        Write-UILog '下面会实时显示已获取的包数量和用时；期间窗口可以最小化，不会中断升级。'
     }
     else {
         Write-UILog '开始安装 dsh（首次约 200 MB，需要联网，请耐心等待）...'
-        Write-UILog '安装进度会实时显示在下面；期间窗口可以最小化，不会中断安装。'
+        Write-UILog '下面会实时显示已获取的包数量和用时；期间窗口可以最小化，不会中断安装。'
     }
 
     # 升级走官方命令 install @latest（比 npm update 更明确，且能一步到最新）
-    $npmArgs = if ($isUpdate) { 'install --global @deepseek-ai/dsh@latest' } else { 'install --global @deepseek-ai/dsh' }
+    # --loglevel http（v1.2.2）：npm 在输出被重定向（非终端）时**不打印下载百分比**，
+    # 只有 http 级别才会逐条输出 `npm http fetch GET 200 <url>`；进度就是解析它得到的。
+    $npmArgs = if ($isUpdate) { 'install --global --loglevel http @deepseek-ai/dsh@latest' } else { 'install --global --loglevel http @deepseek-ai/dsh' }
     $quotedNpm = '"' + $npm + '"'
     try {
         $proc = Start-Process -FilePath 'cmd.exe' `
@@ -1497,20 +1663,73 @@ function Start-DshInstall {
     $script:InstallState.LogPath   = $logPath
     $script:InstallState.LogOffset = 0
     $script:InstallState.ErrOffset = 0
-    $script:InstallState.Progress  = -1
-    $script:InstallState.LastNote  = 0
+    # v1.2.2 进度显示：已获取的包（去重）、最近获取的包、进度行在日志里的位置
+    $script:InstallState.PkgSet    = @{}
+    $script:InstallState.PkgCount  = 0
+    $script:InstallState.LastPkg   = $null
+    $script:InstallState.ProgressIndex = -1
+    $script:InstallState.ProgressStamp = $null
+    $script:InstallState.LastPkgAt = (Get-Date)
     $script:InstallState.EncFallback = $false
     $script:InstallState.Kind      = $Mode
     $script:InstallState.StartedAt = Get-Date
     Write-UILog ("npm 进程已启动（PID {0}），正在下载 ..." -f $proc.Id)
     if ($isUpdate) { Write-UILog '（如果想中止升级，再点一次主按钮即可）' }
     else { Write-UILog '（如果想中止安装，再点一次主按钮即可）' }
+    # 立刻占住进度行，让用户马上看到"有东西在动"
+    Write-UILogInPlace (Format-InstallProgressLine)
+}
+
+<#
+    从一批 npm 输出行里挑出"真正下载的包"（v1.2.2）。
+    --loglevel http 下 npm 会逐条写 `npm http fetch GET 200 <url> ...`，其中
+    · URL 含 /-/ 的是 tarball（真正的包体下载）→ 计入"已获取的包"；
+    · 不含 /-/ 的是 registry 元数据（依赖信息）→ 单独计数，好在包体还没开始下载时
+      也有话可说（实测首次安装前 30 秒只有元数据，一个包体都还没下）。
+    纯函数、不碰界面状态，便于单元测试。
+#>
+function Get-NpmFetchProgress {
+    param([string[]] $Lines)
+    $pkgs = New-Object System.Collections.Generic.List[string]
+    $infos = 0
+    foreach ($line in $Lines) {
+        $m = [regex]::Match($line, '^npm http fetch GET 200 (\S+)')
+        if (-not $m.Success) { continue }
+        $url = $m.Groups[1].Value
+        $cut = $url.IndexOf('/-/')
+        if ($cut -lt 0) { $infos++; continue }
+        $name = $url.Substring(0, $cut) -replace '^https?://[^/]+/', ''
+        try { $name = [System.Uri]::UnescapeDataString($name) } catch { }
+        if ($name) { [void] $pkgs.Add($name) }
+    }
+    return [pscustomobject]@{ Packages = $pkgs; InfoCount = $infos }
+}
+
+<#
+    进度行的文案。npm 在输出被重定向时不打印百分比，所以这里只说**事实**：
+    已经拿到多少个包、用了多久、最近一个是哪个。
+#>
+function Format-InstallProgressLine {
+    $st = $script:InstallState
+    $elapsed = if ($st.StartedAt) { [int] ((Get-Date) - $st.StartedAt).TotalSeconds } else { 0 }
+    $idle = if ($st.LastPkgAt) { ((Get-Date) - $st.LastPkgAt).TotalSeconds } else { 0 }
+    if ($st.PkgCount -le 0) {
+        # 还在解析依赖阶段：没有包体可报，就给元数据条数，免得界面看着像死了
+        return ("  正在解析依赖信息（{0} 条）... 用时 {1} 秒" -f $st.InfoCount, $elapsed)
+    }
+    if ($idle -ge 45) {
+        # 包数长时间不动：多半是 npm 在解包写盘（这段没有任何 http 输出），也可能是网络很慢。
+        # 措辞保持中性，不误导用户以为卡死。
+        return ("  仍在处理（网络较慢或正在写入磁盘）... 已获取 {0} 个包，用时 {1} 秒" -f $st.PkgCount, $elapsed)
+    }
+    return ("  已获取 {0} 个包，用时 {1} 秒，最近：{2}" -f $st.PkgCount, $elapsed, $st.LastPkg)
 }
 
 <#
     读取 npm 新增的输出并转成界面日志。
-    npm 的进度是原地刷新的一行，用字节偏移增量读会读到很多碎片，
-    所以按“取最后一次匹配”的方式显示，而不是每来一段就打印一行。
+    输出量很大（实测一次安装 1117 行 http），所以：
+    · 进度只占一行、原地刷新（Write-UILogInPlace），不刷屏；
+    · npm 的报错原样透出，方便判断是不是网络问题。
 #>
 function Write-InstallProgress {
     $st = $script:InstallState
@@ -1569,35 +1788,30 @@ function Write-InstallProgress {
         }
     }
 
-    if ($lines.Count -eq 0) { return }
+    if ($lines.Count -gt 0) {
+        # 1) 每拿到一个 tarball（去重）就把进度往前推一格
+        $fetched = Get-NpmFetchProgress -Lines $lines
+        $st.InfoCount = $st.InfoCount + $fetched.InfoCount
+        foreach ($name in $fetched.Packages) {
+            if (-not $st.PkgSet.ContainsKey($name)) {
+                $st.PkgSet[$name] = $true
+                $st.PkgCount = $st.PkgCount + 1
+                $st.LastPkg = $name
+                $st.LastPkgAt = Get-Date
+            }
+        }
 
-    # 1) 百分比进度：取这一批里最后一次出现的数字，避免刷屏
-    $pct = -1
-    foreach ($line in $lines) {
-        $m = [regex]::Match($line, '(\d{1,3})%')
-        if ($m.Success) { $pct = [int] $m.Groups[1].Value }
-    }
-    if ($pct -ge 0 -and $pct -ne $st.Progress) {
-        $st.Progress = $pct
-        Write-UILog ("  安装进度 {0}%" -f $pct)
-    }
-
-    # 2) 报错与警告：原样透出，方便用户判断是不是网络问题
-    foreach ($line in $lines) {
-        if ($line -match 'npm (ERR|error)|ERR!|EACCES|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|deprecated') {
-            Write-UILog ("  [npm] {0}" -f $line)
+        # 2) 报错与警告：原样透出，方便用户判断是不是网络问题
+        foreach ($line in $lines) {
+            if ($line -match 'npm (ERR|error)|ERR!|EACCES|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|deprecated') {
+                Write-UILog ("  [npm] {0}" -f $line)
+            }
         }
     }
 
-    # 3) 长时间没有百分比变化时，用最后一行的内容给个“还在动”的反馈
-    $now = (Get-Date).TimeOfDay.TotalSeconds
-    if ($now - $st.LastNote -ge 20) {
-        $st.LastNote = $now
-        $tail = $lines[$lines.Count - 1]
-        if ($tail.Length -gt 100) { $tail = $tail.Substring(0, 100) + '...' }
-        if ($tail) { Write-UILog ("  安装中 ... {0}" -f $tail) }
-        $st.Progress = -1        # 允许同样的百分比再次提示
-    }
+    # 3) 刷新进度行。即使这一批没有新输出也要刷新 —— 否则"用时"会停住，
+    #    用户会以为卡死了（网络慢时两次输出之间可能隔几十秒）。
+    Write-UILogInPlace (Format-InstallProgressLine)
 }
 
 <#
@@ -1608,6 +1822,8 @@ function Complete-DshInstall {
     $elapsed = if ($st.StartedAt) { [int] ((Get-Date) - $st.StartedAt).TotalSeconds } else { 0 }
     # npm 输出可能还有尾巴，补读一次
     Write-InstallProgress
+    # 进度行到此结束：收尾日志要另起新行，下一次安装也必须重新占一行
+    $st.ProgressIndex = -1
 
     $dshPath = Find-Dsh
     $entry = $null
@@ -1617,7 +1833,7 @@ function Complete-DshInstall {
         $st.Phase = 'done'
         if ($st.Kind -eq 'update') {
             # 升级完成：按用户要求**不自动重启服务**，只提示（重启时机由用户定）
-            Write-UILog ("dsh 已升级完成，用时 {0} 秒。" -f $elapsed)
+            Write-UILog ("dsh 已升级完成，用时 {0} 秒（共获取 {1} 个包）。" -f $elapsed, $st.PkgCount)
             Write-UILog ("入口：{0}" -f $entry)
             Write-UILog ("目标版本：{0}；点「启动服务」即可用新版本启动。" -f $st.TargetVersion)
             if ($script:trayIcon) {
@@ -1625,7 +1841,7 @@ function Complete-DshInstall {
             }
             return $true
         }
-        Write-UILog ("dsh 安装完成，用时 {0} 秒。" -f $elapsed)
+        Write-UILog ("dsh 安装完成，用时 {0} 秒（共获取 {1} 个包）。" -f $elapsed, $st.PkgCount)
         Write-UILog ("入口：{0}" -f $entry)
         Write-UILog '现在可以运行了，正在继续启动服务 ...'
         if ($script:trayIcon) {
@@ -1764,6 +1980,24 @@ function Start-DshService {
         if (@(Get-WebUIWindows -ProfilePath $profileDir).Count -gt 0) {
             Write-UILog '检测到上次遗留的 WebUI 窗口（其登录凭据已失效），先关闭它再打开新窗口'
             [void] (Stop-WebUIWindow -ProfilePath $profileDir)
+        }
+
+        # v1.2.2：升级前的 profile 目录不带端口（所有实例共用）。里面可能还挂着升级前
+        # 自己打开的窗口 —— 它在新路径下查不到，会一直留到用户手动关闭。
+        # 但那个目录里也可能挂着**别人的**窗口（同机上另一个实例还开着），所以必须先确认
+        # "这堆进程里确实有本端口的 --app 窗口"才动手：宁可留一个孤儿窗口，绝不误关别人。
+        $legacyDir = Get-WebUIBrowserProfile -Legacy
+        if ((Test-Path -LiteralPath $legacyDir) -and @(Get-WebUIWindows -ProfilePath $legacyDir).Count -gt 0) {
+            $mineInLegacy = @(Get-WebUIBrowserProcesses -ProfilePath $legacyDir | Where-Object {
+                    $_.CommandLine -match ('--app="?https?://[^"\s]*:' + $script:EffectivePort + '/')
+                })
+            if ($mineInLegacy.Count -gt 0) {
+                Write-UILog '检测到旧版本遗留的 WebUI 窗口（升级前打开的，登录凭据已失效），先关闭它'
+                [void] (Stop-WebUIWindow -ProfilePath $legacyDir)
+            }
+            else {
+                Write-UILog '旧版本 profile 下发现别的端口的 WebUI 窗口，跳过不关闭'
+            }
         }
         # 交给浏览器联动——开一个受控的独立窗口（停止服务时能自动关掉它）
         [void] (Start-WebUIWindow -Url $url)
@@ -2028,6 +2262,44 @@ catch {
 # 注意不要用 [System.Windows.Application]::Current —— 这里并没有 Application
 # 对象（窗口是独立创建的），访问它会报“找不到属性 ShutdownMode”。
 $script:appDispatcher = $win.Dispatcher
+
+# ---- 单实例（v1.2.2）：守着"把窗口叫出来"的命名事件，并把自己的窗口句柄登记到状态文件
+# 用 EnsureHandle 先拿到 HWND（此时窗口还不显示），这样 Show() 之前就能完成登记 ——
+# 否则"刚启动就被第二次双击"的窗口期里，后到者会拿不到句柄。
+$uiHwnd = [IntPtr]::Zero
+try {
+    $uiHelper = [System.Windows.Interop.WindowInteropHelper]::new($win)
+    [void] $uiHelper.EnsureHandle()
+    $uiHwnd = $uiHelper.Handle
+}
+catch { Write-UILog ("单实例：取窗口句柄失败（不影响使用）：{0}" -f $_.Exception.Message) }
+
+try {
+    $script:UiActivateEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, $script:UiEventName)
+    $uiActivateTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $uiActivateTimer.Interval = [TimeSpan]::FromMilliseconds(400)
+    $uiActivateTimer.Add_Tick({
+        try {
+            if ($script:UiActivateEvent -and $script:UiActivateEvent.WaitOne(0)) {
+                # 窗口自己激活自己 —— 跨进程 SetForegroundWindow 会被前台锁定策略拒绝
+                if (-not $win.IsVisible) { [void] $win.Show() }
+                $win.WindowState = [System.Windows.WindowState]::Normal
+                [void] $win.Activate()
+                # 短暂置顶再取消，帮助真正拿到前台焦点
+                $win.Topmost = $true
+                $win.Topmost = $false
+                Write-UILog '另一个启动器实例把本窗口叫到了前面'
+            }
+        }
+        catch { }
+    })
+    $uiActivateTimer.Start()
+    $script:UiActivateTimer = $uiActivateTimer
+}
+catch { Write-UILog ("单实例信道初始化失败（不影响使用）：{0}" -f $_.Exception.Message) }
+
+if ($uiHwnd -ne [IntPtr]::Zero) { Set-LauncherUiState -Hwnd ([int] $uiHwnd) }
+
 $win.Show() | Out-Null
 $win.Dispatcher.InvokeAsync({ }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle) | Out-Null
 
@@ -2118,7 +2390,9 @@ if ($env:DSH_WEBUI_SELFTEST) {
                 if ($b) { $m = ("SELFTEST webui-browser -> {0} @ {1}" -f $b.Name, $b.Path) }
                 else { $m = 'SELFTEST webui-browser -> 未找到 Chromium 系浏览器（将降级到系统默认浏览器）' }
                 Write-UILog $m; Write-SelfTestLog $m
-                $m2 = ("SELFTEST webui-profile -> {0}" -f (Get-WebUIBrowserProfile))
+                $prof = Get-WebUIBrowserProfile
+                $m2 = ("SELFTEST webui-profile -> {0} [含端口={1}] 旧路径={2}" -f `
+                        $prof, ($prof -like "*-$($script:EffectivePort)"), (Get-WebUIBrowserProfile -Legacy))
                 Write-UILog $m2; Write-SelfTestLog $m2
             }
             'webui-state' {
@@ -2195,6 +2469,55 @@ if ($env:DSH_WEBUI_SELFTEST) {
                 $m = ("SELFTEST btn-label-cycle -> 升级中='{0}' 完成后='{1}'（期望：取消升级 / 启动服务或停止服务）" -f $during, $after)
                 Write-UILog $m; Write-SelfTestLog $m
             }
+            'install-progress' {
+                # v1.2.2 只读：用**真实抓到**的 npm http 行验证解析（不启动 npm、不改环境）
+                $mock = @(
+                    'npm http fetch GET 200 https://registry.npmjs.org/@deepseek-ai%2fdsh 893ms (cache miss)',
+                    'npm http fetch GET 200 https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.1.5-rc.3.tgz 25394ms (cache miss)',
+                    'npm http fetch GET 200 https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz 120ms (cache miss)',
+                    'npm http fetch GET 200 https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz 130ms (cache miss)',
+                    'npm http fetch GET 200 https://registry.npmjs.org/npm 1167ms',
+                    'npm ERR! code ETIMEDOUT'
+                )
+                $r = Get-NpmFetchProgress -Lines $mock
+                $names = @($r.Packages)
+                $m = ("SELFTEST install-progress -> tarball={0} 去重后={1} metadata={2} 首个={3} [期望 3/2/2/@deepseek-ai/dsh-tools]" -f `
+                        $names.Count, @($names | Sort-Object -Unique).Count, $r.InfoCount, ($names | Select-Object -First 1))
+                Write-UILog $m; Write-SelfTestLog $m
+
+                # 进度行文案的三个分支（临时借用 InstallState，测完原样恢复）
+                $oPkg = $script:InstallState.PkgCount
+                $oInfo = $script:InstallState.InfoCount
+                $oLp = $script:InstallState.LastPkg
+                $oLpa = $script:InstallState.LastPkgAt
+                $oStart = $script:InstallState.StartedAt
+                $script:InstallState.StartedAt = (Get-Date).AddSeconds(-12)
+                $script:InstallState.PkgCount = 0; $script:InstallState.InfoCount = 137
+                $l1 = (Format-InstallProgressLine).Trim()
+                $script:InstallState.PkgCount = 486; $script:InstallState.InfoCount = 599
+                $script:InstallState.LastPkg = 'lodash'; $script:InstallState.LastPkgAt = (Get-Date)
+                $l2 = (Format-InstallProgressLine).Trim()
+                $script:InstallState.LastPkgAt = (Get-Date).AddSeconds(-90)
+                $l3 = (Format-InstallProgressLine).Trim()
+                $script:InstallState.PkgCount = $oPkg; $script:InstallState.InfoCount = $oInfo
+                $script:InstallState.LastPkg = $oLp; $script:InstallState.LastPkgAt = $oLpa
+                $script:InstallState.StartedAt = $oStart
+                $m2 = ("SELFTEST install-progress-lines -> [解析依赖]{0} | [正常]{1} | [久无新增]{2}" -f $l1, $l2, $l3)
+                Write-UILog $m2; Write-SelfTestLog $m2
+            }
+            'single-instance' {
+                # v1.2.2 只读：报告单实例机制的取值（不抢占互斥体、不弹窗、不唤起窗口）
+                $st = Get-LauncherUiState
+                $m = ("SELFTEST single-instance -> 互斥体='{0}' 事件='{1}' 旁路={2} 登记的pid={3} hwnd={4}" -f `
+                        $script:UiMutexName, $script:UiEventName, $script:AllowMultiInstance,
+                        $(if ($st) { $st.pid } else { '(无)' }), $(if ($st) { $st.hwnd } else { '(无)' }))
+                Write-UILog $m; Write-SelfTestLog $m
+                $h = 0
+                try { $h = [int] ([System.Windows.Interop.WindowInteropHelper]::new($win).Handle) } catch { }
+                $m2 = ("SELFTEST single-instance-window -> 本窗口hwnd={0} 状态文件属于本进程={1}" -f `
+                        $h, [bool] ($st -and [int] $st.pid -eq $PID))
+                Write-UILog $m2; Write-SelfTestLog $m2
+            }
             default {
                 Write-UILog ("SELFTEST 未知步骤：{0}" -f $stepName)
                 Write-SelfTestLog ("SELFTEST unknown step: {0}" -f $stepName)
@@ -2206,6 +2529,12 @@ if ($env:DSH_WEBUI_SELFTEST) {
 
 [System.Windows.Threading.Dispatcher]::Run()
 $timer.Stop()
+
+# 单实例收尾：撤掉状态登记、放掉互斥体，让下一个实例能正常启动
+Clear-LauncherUiState
+try { if ($script:UiActivateTimer) { $script:UiActivateTimer.Stop() } } catch { }
+try { if ($script:UiActivateEvent) { $script:UiActivateEvent.Dispose() } } catch { }
+try { if ($script:UiMutex) { $script:UiMutex.ReleaseMutex(); $script:UiMutex.Dispose() } } catch { }
 
 # ------------------------------------------------------------------ 测试用提前返回
 # 只在开发/自动化测试时使用：设置 DSH_WEBUI_IMPORT_ONLY 后，本脚本变成“只定义函数”，
