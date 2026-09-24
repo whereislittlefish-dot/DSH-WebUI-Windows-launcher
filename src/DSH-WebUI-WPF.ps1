@@ -70,15 +70,337 @@ $script:LogFile       = Join-Path $script:StateDir "dsh-web-web-$($script:Effect
 
 # 界面版本号：显示在标题栏，并写进 ui-diagnostics.log——排障或反馈时一眼能确认用的是哪一版。
 # 发版时这里要跟着 README 徽章和 git tag 一起改。
-$script:AppVersion = 'v1.1.2'
+$script:AppVersion = 'v1.2.0'
 
 # netstat 探测结果缓存（见 Get-DshWebInstance）：界面每隔几秒刷新一次状态，
 # 没有缓存时每次都要拉起一个 netstat 进程，白白消耗 CPU。
 $script:ProbeCache = $null
 
+# v1.2.0 浏览器联动状态：
+#   WebUiUrl        = 本次服务启动时抓到的**带 token** 的地址（不带 token 访问会 401）
+#   WebUIWindowMode = 窗口是怎么打开的（app = 受控独立窗口，可自动关；default = 系统默认浏览器，关不掉）
+$script:WebUiUrl        = $null
+$script:WebUIWindowMode = 'none'
+
 # v1.1.1：启动器不再掺和 dsh 的工作区。
 # 工作区完全由 DSH WebUI 里新建/选择的工作区决定（新建会话时带 workspaceId）；
 # 服务进程的 cwd 只在"一个工作区都还没有"时作兜底，界面既不显示也不解释它。
+
+# ============================================================ WebUI 浏览器联动（v1.2.0）
+
+<#
+    方案 B：用 Chromium 系浏览器的 --app + 独立 --user-data-dir 打开一个无地址栏的独立窗口。
+
+    为什么要独立 --user-data-dir：不开它，窗口会挂进用户日常浏览器的那棵进程树，
+    按 PID 关闭就会误伤用户正在看的标签页。独立目录之后它是独立进程树，
+    可以按 profile 路径精确关闭整组进程，于是「停止服务 → 窗口自动关闭」才成立。
+
+    实测数据（2026-09-24，见 docs\验证日志\v1.2.0-浏览器联动实测.log）：
+      · 一次 --app 会拉起 8~17 个进程，关闭耗时约 1.2 秒，关闭后零残留；
+      · 重复执行 --app 会**真的开出第二个窗口**（两个窗口还可能挤在同一个 PID 里），
+        所以「窗口已在 → 聚焦」必须自己做，不能靠再调一次 --app；
+      · 关掉最后一个窗口后浏览器自己会回收整组进程，但按 profile 关整组仍是必要的兜底；
+      · SetForegroundWindow 从后台进程调用会被系统前台锁定策略拒绝 → 聚焦失败只记日志。
+
+    刻意**不内嵌 WebView2**：那需要释放原生 DLL，会让 101 KB 的单文件 exe 涨到 MB 级
+    （详见 docs\浏览器联动调研-260922-1531.md 第九、十章）。
+#>
+
+# 枚举顶层窗口用的 Win32 入口（窗口存活检测与聚焦都要用）
+if (-not ('WebUiWindowApi' -as [type])) {
+    Add-Type -Namespace '' -Name 'WebUiWindowApi' -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool EnumWindows(EnumProc cb, System.IntPtr p);
+public delegate bool EnumProc(System.IntPtr h, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetClassName(System.IntPtr h, System.Text.StringBuilder s, int n);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool ShowWindow(System.IntPtr h, int c);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool SetForegroundWindow(System.IntPtr h);
+'@
+}
+
+# 独立 profile 目录：与用户日常浏览器完全隔离。
+# 停止服务时只关进程、**保留目录**（保留登录态与缓存，下次打开更快，也避免反复重建 profile）。
+function Get-WebUIBrowserProfile {
+    $dir = Join-Path $script:StateDir 'browser-profile'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    return $dir
+}
+
+<#
+    浏览器探测：只收 Chromium 内核（--app 与独立 profile 是它的通用参数）。
+    顺序 Edge → Chrome → Brave → Vivaldi → Opera → 360极速（按"机器上出现的概率"排）。
+    路径来源三选一，命中后一律 Test-Path 校验，绝不写死盘符：
+      ① 注册表 App Paths\<exe>（HKLM、WOW6432Node、HKCU 三处都查）
+      ② 常见安装目录
+    刻意不纳入夸克等非可靠候选：实测其注册表项连 shell\open\command 都是空的。
+#>
+function Resolve-WebUIBrowser {
+    $candidates = @(
+        [pscustomobject]@{ Name = 'Microsoft Edge'; Exe = 'msedge.exe'
+            Dirs = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application", "$env:ProgramFiles\Microsoft\Edge\Application") }
+        [pscustomobject]@{ Name = 'Google Chrome'; Exe = 'chrome.exe'
+            Dirs = @("$env:ProgramFiles\Google\Chrome\Application", "${env:ProgramFiles(x86)}\Google\Chrome\Application", "$env:LOCALAPPDATA\Google\Chrome\Application") }
+        [pscustomobject]@{ Name = 'Brave'; Exe = 'brave.exe'
+            Dirs = @("$env:ProgramFiles\BraveSoftware\Brave-Browser\Application", "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Application") }
+        [pscustomobject]@{ Name = 'Vivaldi'; Exe = 'vivaldi.exe'
+            Dirs = @("$env:ProgramFiles\Vivaldi\Application", "${env:ProgramFiles(x86)}\Vivaldi\Application", "$env:LOCALAPPDATA\Vivaldi\Application") }
+        [pscustomobject]@{ Name = 'Opera'; Exe = 'opera.exe'
+            Dirs = @("$env:LOCALAPPDATA\Programs\Opera", "$env:ProgramFiles\Opera") }
+        [pscustomobject]@{ Name = '360极速浏览器'; Exe = '360chrome.exe'
+            Dirs = @("$env:LOCALAPPDATA\360Chrome\Chrome\Application", "$env:ProgramFiles\360\360Chrome\Chrome\Application") }
+    )
+
+    foreach ($c in $candidates) {
+        foreach ($hive in @(
+                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
+                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths',
+                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths')) {
+            $key = Join-Path $hive $c.Exe
+            if (Test-Path -LiteralPath $key) {
+                $val = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).'(default)'
+                if ($val) {
+                    $val = ([string] $val).Trim('"')
+                    if (Test-Path -LiteralPath $val) { return [pscustomobject]@{ Name = $c.Name; Path = $val } }
+                }
+            }
+        }
+        foreach ($d in $c.Dirs) {
+            if (-not $d) { continue }
+            $candidate = Join-Path $d $c.Exe
+            if (Test-Path -LiteralPath $candidate) { return [pscustomobject]@{ Name = $c.Name; Path = $candidate } }
+        }
+    }
+    return $null
+}
+
+# 属于本启动器 profile 的浏览器进程（关闭与存活检测都以它为准）。
+# 只按命令行里的 profile 路径匹配，绝不按进程名批量操作——那是会误伤用户浏览器的做法。
+function Get-WebUIBrowserProcesses {
+    param([string] $ProfilePath)
+    if (-not $ProfilePath) { return @() }
+    $names = @('msedge.exe', 'chrome.exe', 'brave.exe', 'vivaldi.exe', 'opera.exe', '360chrome.exe')
+    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -and $_.CommandLine.Contains($ProfilePath) -and ($names -contains $_.Name)
+        })
+}
+
+<#
+    真正的 WebUI 应用窗口：属于 profile 组、类名 Chrome_WidgetWin_1、标题非空。
+
+    为什么不能用「组内有进程」代替：浏览器会常驻一批**没有窗口**的进程池进程，
+    还有 HintWnd / MSCTFIME UI / Sogou_TSF_UI 这类辅助顶层窗口。
+    只看进程数会把「用户已经关掉的窗口」误判为「还开着」，
+    于是再也不会打开新窗口——这是实测踩到的坑，判据必须落在"窗口"上。
+#>
+function Get-WebUIWindows {
+    param([string] $ProfilePath)
+    $pids = @(Get-WebUIBrowserProcesses -ProfilePath $ProfilePath | ForEach-Object { [int] $_.ProcessId })
+    if ($pids.Count -eq 0) { return @() }
+
+    $list = New-Object System.Collections.ArrayList
+    $cb = [WebUiWindowApi+EnumProc]{
+        param($h, $p)
+        $owner = 0
+        [void] [WebUiWindowApi]::GetWindowThreadProcessId($h, [ref] $owner)
+        if ($pids -contains [int] $owner) {
+            $sbTitle = New-Object System.Text.StringBuilder 512
+            [void] [WebUiWindowApi]::GetWindowText($h, $sbTitle, $sbTitle.Capacity)
+            if ($sbTitle.Length -gt 0) {
+                $sbClass = New-Object System.Text.StringBuilder 256
+                [void] [WebUiWindowApi]::GetClassName($h, $sbClass, $sbClass.Capacity)
+                if ($sbClass.ToString() -eq 'Chrome_WidgetWin_1') {
+                    [void] $list.Add([pscustomobject]@{ Hwnd = $h; Pid = [int] $owner; Title = $sbTitle.ToString() })
+                }
+            }
+        }
+        return $true
+    }
+    [void] [WebUiWindowApi]::EnumWindows($cb, [System.IntPtr]::Zero)
+    return $list.ToArray()
+}
+
+<#
+    聚焦已有的 WebUI 窗口。
+
+    实测：SetForegroundWindow 从后台进程调用会被 Windows 的前台锁定策略拒绝。
+    所以这里只尽力而为，失败**不报错、不抛异常**——用户仍可 Alt+Tab 找到窗口，
+    而为此引入 AttachThreadInput 之类的技巧不值得（脆弱且容易被系统更新破坏）。
+#>
+function Focus-WebUIWindow {
+    param([string] $ProfilePath)
+    $wins = @(Get-WebUIWindows -ProfilePath $ProfilePath)
+    if ($wins.Count -eq 0) { return $false }
+    try {
+        [void] [WebUiWindowApi]::ShowWindow($wins[0].Hwnd, 9)          # 9 = SW_RESTORE
+        [void] [WebUiWindowApi]::SetForegroundWindow($wins[0].Hwnd)
+    }
+    catch { Write-UILog ("聚焦 WebUI 窗口失败（不影响使用）：{0}" -f $_.Exception.Message) }
+    return $true
+}
+
+<#
+    关闭 WebUI 窗口：按 profile 路径匹配**整组**进程。
+
+    绝对不能只关主 PID：--app 会拉起 8~17 个进程（实测 2026-09-24：10~17 个），
+    只关主进程一定留下残留子进程继续吃内存。这里整组关 + 复查补刀（最多 4 轮）。
+#>
+function Stop-WebUIWindow {
+    param([string] $ProfilePath)
+    $procs = @(Get-WebUIBrowserProcesses -ProfilePath $ProfilePath)
+    if ($procs.Count -eq 0) { return 0 }
+
+    $killed = 0
+    for ($round = 1; $round -le 4; $round++) {
+        $procs = @(Get-WebUIBrowserProcesses -ProfilePath $ProfilePath)
+        if ($procs.Count -eq 0) { break }
+        foreach ($p in $procs) {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            $killed++
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    $left = @(Get-WebUIBrowserProcesses -ProfilePath $ProfilePath).Count
+    if ($left -eq 0) { Write-UILog ("已关闭 WebUI 窗口（整组 {0} 个进程）" -f $killed) }
+    else { Write-UILog ("WebUI 窗口关闭后仍有 {0} 个进程残留" -f $left) }
+    return $killed
+}
+
+<#
+    取当前服务的 WebUI 地址。
+
+    必须**带 token**：实测 `http://127.0.0.1:3080/` 不带 token 返回 401。
+    token 每次启动服务重新签发，所以来源按可靠性排序：
+      ① 本次启动流程刚抓到的地址（内存）
+      ② state 文件里的 webUrl（启动器重启后仍可用）
+      ③ 服务日志里的 `dsh web: http://…?token=…`（正则实测可完整匹配）
+      ④ 兜底：不带 token 的地址（浏览器若已持有 cookie 仍能进）
+#>
+function Get-WebUIUrl {
+    if ($script:WebUiUrl) { return $script:WebUiUrl }
+
+    if (Test-Path -LiteralPath $script:StateFile) {
+        try {
+            $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json
+            # 只采用**带 token** 的地址：v1.2.0 用独立浏览器数据目录（没有旧 cookie），
+            # 不带 token 访问必定 401。若 state 里存的是旧格式（无 token），继续往下找日志。
+            if ($saved -and $saved.webUrl -and $saved.webUrl -match 'token=') { $script:WebUiUrl = $saved.webUrl; return $script:WebUiUrl }
+        }
+        catch { }
+    }
+
+    if (Test-Path -LiteralPath $script:LogFile) {
+        try {
+            $text = Get-Content -LiteralPath $script:LogFile -Raw -ErrorAction SilentlyContinue
+            if ($text) {
+                $m = [regex]::Match($text, 'dsh web:\s*(http://[^\s]+)')
+                if ($m.Success) { $script:WebUiUrl = $m.Groups[1].Value; return $script:WebUiUrl }
+            }
+        }
+        catch { }
+    }
+
+    return "http://127.0.0.1:$($script:EffectivePort)"
+}
+
+<#
+    打开（或聚焦）WebUI 窗口——四级降级链：
+
+      ① Edge  --app + 独立 profile          能自动关窗
+      ② 其他 Chromium 浏览器，同上           能自动关窗（Edge 被卸载时的主要出路）
+      ③ 系统默认浏览器 Start-Process <url>   **不能**自动关窗，必须明确告知用户
+      ④ 连默认浏览器都没有                   显示地址 + 复制到剪贴板，不报错
+
+    回滚开关：DSH_WEBUI_BROWSER=default → 跳过 ①②，直接走 ③，退回 v1.1.2 的观感。
+#>
+function Start-WebUIWindow {
+    param([string] $Url)
+
+    if (-not $Url) { $Url = Get-WebUIUrl }
+    $profileDir = Get-WebUIBrowserProfile
+
+    # 窗口已在 → 聚焦。重复调 --app 会真的开出第二个窗口（实测），必须自己拦。
+    if (@(Get-WebUIWindows -ProfilePath $profileDir).Count -gt 0) {
+        [void] (Focus-WebUIWindow -ProfilePath $profileDir)
+        Write-UILog 'WebUI 窗口已在运行，已切换到该窗口'
+        return $true
+    }
+
+    if ($env:DSH_WEBUI_BROWSER -ne 'default') {
+        $browser = Resolve-WebUIBrowser
+        if ($browser) {
+            try {
+                $argList = @(
+                    "--app=`"$Url`"",
+                    "--user-data-dir=`"$profileDir`"",
+                    '--no-first-run',
+                    '--no-default-browser-check'
+                )
+                Start-Process -FilePath $browser.Path -ArgumentList $argList | Out-Null
+                $script:WebUIWindowMode = 'app'
+                Write-UILog ("已用 {0} 打开独立窗口（停止服务时会自动关闭）" -f $browser.Name)
+                return $true
+            }
+            catch {
+                Write-UILog ("用 {0} 打开窗口失败：{1}" -f $browser.Name, $_.Exception.Message)
+            }
+        }
+        else {
+            Write-UILog '未找到 Chromium 系浏览器（Edge / Chrome / Brave / Vivaldi / Opera / 360极速），改用系统默认浏览器'
+        }
+    }
+
+    try {
+        Start-Process $Url | Out-Null
+        $script:WebUIWindowMode = 'default'
+        if ($env:DSH_WEBUI_BROWSER -eq 'default') {
+            Write-UILog '已按回滚开关（DSH_WEBUI_BROWSER=default）用系统默认浏览器打开'
+        }
+        else {
+            Write-UILog '已用系统默认浏览器打开'
+        }
+        Write-UILog '注意：这种方式打开的标签页无法自动关闭，停止服务后请手动关掉它'
+        return $true
+    }
+    catch { Write-UILog ("打开浏览器失败：{0}" -f $_.Exception.Message) }
+
+    $script:WebUIWindowMode = 'none'
+    Write-UILog '未能打开任何浏览器，请手动复制下面的地址访问：'
+    Write-UILog $Url
+    try { Set-Clipboard -Value $Url; Write-UILog '（地址已复制到剪贴板）' } catch { }
+    return $false
+}
+
+<#
+    「DS开放平台」入口（v1.2.0 开发中，按用户要求由「获取 API Key」更名）。
+
+    固定指向 DeepSeek 开放平台首页：只作快捷入口，用户自己在那里注册/登录/建 Key。
+    刻意**不做**任何额外功能——不检测用户是否已配 Key、不按状态高亮、不直达 /api_keys 子页；
+    也**不用**受控的 --app 窗口（那是 WebUI 专用的；Key 页面属于用户的日常浏览，走系统默认浏览器）。
+#>
+function Open-ApiKeyPage {
+    $url = 'https://platform.deepseek.com/'
+    try {
+        Start-Process $url | Out-Null
+        Write-UILog '已在浏览器打开 DeepSeek 开放平台'
+        return $true
+    }
+    catch {
+        Write-UILog ("打开开放平台失败：{0}" -f $_.Exception.Message)
+        Write-UILog ("可手动访问：{0}" -f $url)
+        try { Set-Clipboard -Value $url; Write-UILog '（地址已复制到剪贴板）' } catch { }
+        return $false
+    }
+}
 
 # ============================================================ 业务逻辑
 
@@ -402,11 +724,13 @@ $xamlText = @'
           </StackPanel>
         </Button>
 
-        <!-- 次按钮行 -->
+        <!-- 次按钮行（v1.2.0：2 列 → 3 列，中间新增「DS开放平台」入口） -->
         <Grid Grid.Row="5" Margin="0,12,0,0">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="16"/>
+            <ColumnDefinition Width="12"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="12"/>
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
           <Button Grid.Column="0" x:Name="BtnOpen" Style="{StaticResource SecondaryButton}">
@@ -416,7 +740,14 @@ $xamlText = @'
               <TextBlock Text="打开 WebUI" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
           </Button>
-          <Button Grid.Column="2" x:Name="BtnRefresh" Style="{StaticResource SecondaryButton}">
+          <Button Grid.Column="2" x:Name="BtnApiKey" Style="{StaticResource SecondaryButton}">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="&#xE192;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                         Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
+              <TextBlock Text="DS开放平台" Margin="8,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Button>
+          <Button Grid.Column="4" x:Name="BtnRefresh" Style="{StaticResource SecondaryButton}">
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="14"
                          Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
@@ -506,6 +837,60 @@ function Show-MainWindow {
     }
 }
 
+<#
+    退出前确认（方案 C）。
+
+    只在**服务正在运行时**才打扰用户；服务已停止就直接放行，不弹框。
+    标题栏 ✕ 与托盘「退出」两条路径共用本函数，语义才不会分叉。
+
+    返回：
+      $true  → 允许退出（调用方继续关窗口 / 结束消息循环）
+      $false → 用户选了「取消」，什么都不做
+#>
+function Confirm-LauncherExit {
+    $status = Get-DshWebStatus -Force
+    if (-not $status.Running) { return $true }
+
+    $text = @"
+DSH 服务仍在运行。
+
+是：退出并停止服务
+否：仅退出启动器；服务继续在后台运行。
+    如需停止服务，再次打开启动器，点「停止服务」即可。
+取消：不退出，返回启动器
+"@
+
+    # 默认按钮 = 取消（防误按：直接回车不会把服务顺手停掉）
+    $choice = [System.Windows.MessageBox]::Show(
+        $text,
+        'DSH WebUI',
+        [System.Windows.MessageBoxButton]::YesNoCancel,
+        [System.Windows.MessageBoxImage]::Warning,
+        [System.Windows.MessageBoxResult]::Cancel)
+
+    if ($choice -eq [System.Windows.MessageBoxResult]::Yes) {
+        Write-UILog '正在停止服务并退出 ...'
+        Stop-DshService
+        return $true
+    }
+
+    if ($choice -eq [System.Windows.MessageBoxResult]::No) {
+        # 「仅退出启动器」：服务继续跑，并明确告诉用户怎么再停它——这正是本轮加该需求的本意
+        Write-UILog '已选择「仅退出启动器」：DSH 服务继续在后台运行。'
+        Write-UILog '如需停止服务：再次打开启动器，点「停止服务」。'
+        try {
+            Add-Content -LiteralPath (Join-Path $script:StateDir 'ui-diagnostics.log') `
+                -Value ("[{0}] 用户选择「仅退出启动器」，服务保持运行（端口 {1}）" -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $status.Port) `
+                -Encoding UTF8
+        }
+        catch { }
+        return $true
+    }
+
+    Write-UILog '已取消退出（服务与界面都保持原样）。'
+    return $false
+}
+
 # 窗口首次显示时，纠正“被 CreateNoWindow 建成隐藏窗口”的情况。
 # 这里不再调用 Show()：Show() 本身已由主流程 / Show-MainWindow 负责，
 # 在 Loaded 里再调一次是多余且危险的（重入）。
@@ -540,6 +925,7 @@ $btnMain     = $win.FindName('BtnMain')
 $mainLabel   = $win.FindName('MainLabel')
 $mainIcon    = $win.FindName('MainIcon')
 $btnOpen     = $win.FindName('BtnOpen')
+$btnApiKey   = $win.FindName('BtnApiKey')
 $btnRefresh  = $win.FindName('BtnRefresh')
 $logList     = $win.FindName('LogList')
 $logScroll   = $win.FindName('LogScroll')
@@ -615,6 +1001,11 @@ function Update-UI {
         $btnMain.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#2563EB')
     }
 
+    # v1.2.0：托盘动态项跟着状态走（服务在跑显示「停止服务」，否则「启动服务」）
+    if ($script:miToggle) {
+        $script:miToggle.Text = if ($status.Running) { '停止服务' } else { '启动服务' }
+    }
+
     # 推进安装状态（读取 npm 输出、判断结束、成功后自动继续启动服务）
     Update-SetupUI
 }
@@ -656,8 +1047,10 @@ $btnMin.Add_Click({
 }
 
 if ($btnClose) {
-    # 点 ✕ = 真正退出：必须先置 IsExiting，否则 Closing 会把它当成“关闭到托盘”而取消
+    # 点 ✕ = 真正退出：必须先置 IsExiting，否则 Closing 会把它当成“关闭到托盘”而取消。
+    # v1.2.0：退出前先过 Confirm-LauncherExit（方案 C）——仅当服务在运行时才弹三选一。
     $btnClose.Add_Click({
+        if (-not (Confirm-LauncherExit)) { return }
         $script:IsExiting = $true
         if ($script:trayIcon) { $script:trayIcon.Visible = $false; $script:trayIcon.Dispose() }
         $win.Close()
@@ -698,12 +1091,16 @@ $btnOpen.Add_Click({
             Write-UILog '服务尚未响应，请稍等几秒再点「打开 WebUI」'
             return
         }
-        Start-Process $base
-        Write-UILog ("已在浏览器打开 http://127.0.0.1:{0}" -f $status.Port)
-        Write-UILog '（停止服务后该标签页需手动关闭，这是浏览器限制）'
+        # v1.2.0：用**带 token** 的地址开受控独立窗口（不带 token 会 401）；
+        # 窗口已在时改为聚焦，不会开出第二个窗口。
+        [void] (Start-WebUIWindow -Url (Get-WebUIUrl))
     }
     else { Write-UILog '服务尚未运行，请先点「启动服务」' }
 })
+
+# v1.2.0：「DS开放平台」入口。固定指向 DeepSeek 开放平台首页，用**系统默认浏览器**打开
+# （刻意不用受控 --app 窗口：那是 WebUI 专用的，Key 页面属于用户的日常浏览）。
+$btnApiKey.Add_Click({ [void] (Open-ApiKeyPage) })
 
 $btnRefresh.Add_Click({ Update-UI -Force; Write-UILog '状态已刷新' })
 
@@ -990,7 +1387,14 @@ function Start-DshService {
         $state | ConvertTo-Json | Set-Content -LiteralPath $script:StateFile -Encoding UTF8
         Write-UILog ("进程已启动（PID {0}），等待就绪 ..." -f $proc.Id)
 
+        # v1.2.0 修复（重要）：**必须以服务日志里带 token 的地址为准**。
+        # 实测：端口开始监听比日志打印 `dsh web: …?token=…` 早约 1.8 秒，而 v1.2.0 用的是
+        # **独立浏览器数据目录**（没有旧 cookie），不带 token 访问必定 401，页面会显示
+        # "dsh web authentication required"。所以端口探测只当"服务已起来"的信号，
+        # 绝不用它当地址；只有始终等不到 token 行时才退化，并明确告警。
         $url = $null
+        $portReady = $false
+        $portReadyAt = $null
         $deadline = (Get-Date).AddSeconds(120)
         $waited = 0
         while ((Get-Date) -lt $deadline) {
@@ -998,16 +1402,44 @@ function Start-DshService {
             $waited++
             if ($waited % 10 -eq 0) { Write-UILog ("  已等待约 {0} 秒 ..." -f [int]($waited * 0.8)) }
             $win.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Background, [action]{})
+
+            # ① 首选且唯一可靠：日志里带 token 的地址
             if (Test-Path -LiteralPath $script:LogFile) {
                 $t = Get-Content -LiteralPath $script:LogFile -Raw -ErrorAction SilentlyContinue
-                if ($t) { $m = [regex]::Match($t, 'dsh web:\s*(http://[^\s]+)'); if ($m.Success) { $url = $m.Groups[1].Value; break } }
+                if ($t) {
+                    $m = [regex]::Match($t, 'dsh web:\s*(http://[^\s]+)')
+                    if ($m.Success -and $m.Groups[1].Value -match 'token=') { $url = $m.Groups[1].Value; break }
+                }
             }
-            $probe = & netstat -ano 2>$null | Select-String -Pattern ":$($script:EffectivePort)\s" | Select-String -Pattern 'LISTENING'
-            if ($probe) { $url = "http://127.0.0.1:$($script:EffectivePort)"; break }
+
+            # ② 端口监听只是"服务起来了"的信号，不能当地址用（比 token 早约 1.8 秒）
+            if (-not $portReady) {
+                $probe = & netstat -ano 2>$null | Select-String -Pattern ":$($script:EffectivePort)\s" | Select-String -Pattern 'LISTENING'
+                if ($probe) {
+                    $portReady = $true
+                    $portReadyAt = Get-Date
+                    Write-UILog '端口已监听，正在等待服务输出带 token 的访问地址 ...'
+                }
+            }
+            elseif ($portReadyAt -and ((Get-Date) - $portReadyAt).TotalSeconds -gt 45) {
+                # ③ 45 秒仍等不到 token：退化（例如将来 dsh 改了输出格式），并明确告警
+                $url = "http://127.0.0.1:$($script:EffectivePort)"
+                Write-UILog '警告：45 秒内没等到服务输出带 token 的地址，已改用不带 token 的地址。'
+                Write-UILog '     若页面提示 "authentication required"，请点「停止服务」后重新启动。'
+                break
+            }
+
             if ($proc.HasExited) { break }
         }
 
         if (-not $url) { throw "服务未在 120 秒内就绪（PID $($proc.Id)）" }
+
+        # v1.2.0：把**带 token** 的地址记进内存与 state。
+        # 两个场景都要用它：打开受控窗口；窗口被用户手动关掉后再从托盘/界面打开。
+        # （不带 token 访问返回 401，所以这里不能只存 http://127.0.0.1:端口）
+        $script:WebUiUrl = $url
+        $state['webUrl'] = $url
+        $state | ConvertTo-Json | Set-Content -LiteralPath $script:StateFile -Encoding UTF8
 
         $baseUrl = "http://127.0.0.1:$($script:EffectivePort)"
         Write-UILog '端口已就绪，确认服务能响应 ...'
@@ -1016,10 +1448,19 @@ function Start-DshService {
         }
         Write-UILog '服务已就绪，可以使用了。'
         if ($script:trayIcon) {
-            try { $script:trayIcon.ShowBalloonTip(2000, 'DSH WebUI', '服务已启动，浏览器即将打开。', 'Info') } catch { }
+            try { $script:trayIcon.ShowBalloonTip(2000, 'DSH WebUI', '服务已启动，WebUI 窗口即将打开。', 'Info') } catch { }
         }
-        Start-Process $url
-        Write-UILog ("已在浏览器打开 http://127.0.0.1:{0}" -f $script:EffectivePort)
+        # v1.2.0 修复：服务每次启动都会**重新签发 token**，上一次打开的窗口里那个页面
+        # 必然已经失效。若此时还残留着旧窗口，Start-WebUIWindow 会把它当成"已打开"而只做聚焦，
+        # 用户看到的就是 "authentication required"。所以开窗前先把残留窗口（本启动器 profile
+        # 的整个进程组）关掉，再开一个带新 token 的窗口。
+        $profileDir = Get-WebUIBrowserProfile
+        if (@(Get-WebUIWindows -ProfilePath $profileDir).Count -gt 0) {
+            Write-UILog '检测到上次遗留的 WebUI 窗口（其登录凭据已失效），先关闭它再打开新窗口'
+            [void] (Stop-WebUIWindow -ProfilePath $profileDir)
+        }
+        # 交给浏览器联动——开一个受控的独立窗口（停止服务时能自动关掉它）
+        [void] (Start-WebUIWindow -Url $url)
     }
     catch { Write-UILog ("失败：{0}" -f $_.Exception.Message) }
     finally { $btnMain.IsEnabled = $true; Update-UI }
@@ -1032,6 +1473,12 @@ function Stop-DshService {
     Write-UILog ("正在停止 {0} ..." -f $status.Port)
     $btnMain.IsEnabled = $false
     try {
+        # v1.2.0：先关掉受控的 WebUI 窗口（按 profile 关整组），再停服务。
+        # 这样页面上不会留着"连接断开"的样子；两步互不依赖（关窗只认 profile 路径），
+        # 任何一步失败都不会影响另一步。
+        $profileDir = Get-WebUIBrowserProfile
+        [void] (Stop-WebUIWindow -ProfilePath $profileDir)
+
         $targetPid = [int] $status.Pid
         Stop-Process -Id $targetPid -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(3)
@@ -1052,7 +1499,12 @@ function Stop-DshService {
             Remove-Item -LiteralPath $script:LogFile -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath "$($script:LogFile).err" -Force -ErrorAction SilentlyContinue
             Write-UILog ("已停止，端口 {0} 已释放" -f $status.Port)
-            Write-UILog '提醒：浏览器里那个 DSH 标签页不会自动关闭，请手动关掉它（显示"需要重新连接"属正常）'
+            # v1.2.0：窗口是受控的独立窗口时已经自动关掉了；只有降级到系统默认浏览器时才要提醒手动关。
+            if ($script:WebUIWindowMode -eq 'default') {
+                Write-UILog '提醒：系统默认浏览器里那个 DSH 标签页不会自动关闭，请手动关掉它（显示"需要重新连接"属正常）'
+            }
+            $script:WebUIWindowMode = 'none'
+            $script:WebUiUrl = $null
         }
     }
     catch { Write-UILog ("失败：{0}" -f $_.Exception.Message) }
@@ -1165,6 +1617,10 @@ $win.Add_ContentRendered({
 # 退出标志已在窗口创建后初始化（$script:IsExiting），这里不要再重复赋值，
 # 否则会把「正在退出」的状态覆盖回 $false，导致窗口关不掉。
 $script:trayIcon = $null
+# v1.2.0：托盘菜单对象与「启动/停止服务」动态项要在别处（Update-UI、界面自检）也能访问，
+# 因此存到脚本作用域，不再只是局部变量。
+$script:trayMenu = $null
+$script:miToggle = $null
 try {
     $script:trayIcon = New-Object System.Windows.Forms.NotifyIcon
     # 托盘图标：用 app.ico（和 exe、窗口标题栏保持一致）。
@@ -1186,19 +1642,45 @@ try {
 
     $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
     $miShow = $trayMenu.Items.Add('显示主窗口')
+    # v1.2.0：一个动态项——服务在跑显示「停止服务」，否则「启动服务」（文案由 Update-UI 刷新）
+    $miToggle = $trayMenu.Items.Add('启动服务')
     $miOpen = $trayMenu.Items.Add('打开 WebUI')
+    $miApiKey = $trayMenu.Items.Add('DS开放平台')
     [void] $trayMenu.Items.Add('-')
     $miExit = $trayMenu.Items.Add('退出')
+    $script:trayMenu = $trayMenu
+    $script:miToggle = $miToggle
 
     $miShow.Add_Click({
         [void] (Show-MainWindow)
     })
 
+    # v1.2.0：托盘里可直接启停服务，不必先恢复主窗口再点主按钮。
+    # 状态一律 -Force 立即重探；动作结束后用气泡反馈结果，并刷新动态项文案。
+    $miToggle.Add_Click({
+        $st = Get-DshWebStatus -Force
+        if ($st.Running) {
+            Stop-DshService
+            if ($script:trayIcon) { try { $script:trayIcon.ShowBalloonTip(2000, 'DSH WebUI', '服务已停止。', 'Info') } catch { } }
+        }
+        else {
+            Start-DshService
+            if ($script:trayIcon) { try { $script:trayIcon.ShowBalloonTip(2000, 'DSH WebUI', '服务已启动。', 'Info') } catch { } }
+        }
+        Update-UI -Force
+    })
+
+    $miApiKey.Add_Click({ [void] (Open-ApiKeyPage) })
+
     $miOpen.Add_Click({
         $status = Get-DshWebStatus
         if ($status.Running) {
             $base = "http://127.0.0.1:$($status.Port)"
-            if (Wait-HttpReady -BaseUrl $base -TimeoutSeconds 10) { Start-Process $base }
+            if (Wait-HttpReady -BaseUrl $base -TimeoutSeconds 10) {
+                # v1.2.0：带 token 开受控独立窗口；窗口已在则聚焦
+                # （实测重复执行 --app 会真的开出第二个窗口，所以不能无脑再开）
+                [void] (Start-WebUIWindow -Url (Get-WebUIUrl))
+            }
             else { Write-UILog '服务尚未响应，请稍后再试' }
         }
         else {
@@ -1208,6 +1690,10 @@ try {
     })
 
     $miExit.Add_Click({
+        # v1.2.0：与标题栏 ✕ 共用同一套退出确认（方案 C）。
+        # 先从托盘把主窗口显示出来，让对话框有明确的归属，用户看得见它在问什么。
+        [void] (Show-MainWindow)
+        if (-not (Confirm-LauncherExit)) { return }
         # 真正退出：先置 IsExiting（否则 Closing 会把关闭取消掉），再关窗口
         $script:IsExiting = $true
         try { $script:trayIcon.Visible = $false; $script:trayIcon.Dispose() } catch { }
@@ -1311,6 +1797,44 @@ if ($env:DSH_WEBUI_SELFTEST) {
                 # 曾经用一个假“运行中”状态去驱动「停止服务」链路，结果误伤到运行中的
                 # dsh 进程（PowerShell 按名字清理更是危险）。自检从此不碰任何进程。
                 $m = ("SELFTEST main-button-state -> label='{0}' enabled={1}" -f $mainLabel.Text, $btnMain.IsEnabled)
+                Write-UILog $m; Write-SelfTestLog $m
+            }
+            'webui-browser' {
+                # v1.2.0 只读：只探测浏览器与 profile 目录，绝不启动或关闭任何进程
+                $b = Resolve-WebUIBrowser
+                if ($b) { $m = ("SELFTEST webui-browser -> {0} @ {1}" -f $b.Name, $b.Path) }
+                else { $m = 'SELFTEST webui-browser -> 未找到 Chromium 系浏览器（将降级到系统默认浏览器）' }
+                Write-UILog $m; Write-SelfTestLog $m
+                $m2 = ("SELFTEST webui-profile -> {0}" -f (Get-WebUIBrowserProfile))
+                Write-UILog $m2; Write-SelfTestLog $m2
+            }
+            'webui-state' {
+                # v1.2.0 只读：窗口存活检测的实际取值（窗口数 / 组内进程数 / 当前降级模式）
+                $prof  = Get-WebUIBrowserProfile
+                $wins  = @(Get-WebUIWindows -ProfilePath $prof)
+                $procs = @(Get-WebUIBrowserProcesses -ProfilePath $prof)
+                $hasToken = [bool] ($script:WebUiUrl -match 'token=')
+                $m = ("SELFTEST webui-state -> 窗口={0} 组内进程={1} 模式={2} url带token={3}" -f `
+                        $wins.Count, $procs.Count, $script:WebUIWindowMode, $hasToken)
+                Write-UILog $m; Write-SelfTestLog $m
+            }
+            'tray-menu' {
+                # v1.2.0 只读：列出托盘菜单项，确认新增入口都在、动态启停项的文案正确
+                $items = New-Object System.Collections.ArrayList
+                if ($script:trayMenu) {
+                    foreach ($it in $script:trayMenu.Items) {
+                        [void] $items.Add($(if ($it.Text) { $it.Text } else { '---' }))
+                    }
+                }
+                $m = ("SELFTEST tray-menu -> {0}" -f ($items -join ' | '))
+                Write-UILog $m; Write-SelfTestLog $m
+            }
+            'api-key' {
+                # v1.2.0 只读：确认两处「DS开放平台」入口都已挂接。
+                # 刻意**不点击**——点了会真的打开浏览器，自检不该有这种副作用。
+                $hasTrayItem = [bool] ($script:trayMenu -and @($script:trayMenu.Items | Where-Object { $_.Text -eq 'DS开放平台' }).Count)
+                $m = ("SELFTEST api-key -> 主界面按钮={0} 托盘菜单项={1} 目标=https://platform.deepseek.com/" -f `
+                        [bool] $btnApiKey, $hasTrayItem)
                 Write-UILog $m; Write-SelfTestLog $m
             }
             default {

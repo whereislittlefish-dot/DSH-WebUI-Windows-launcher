@@ -27,7 +27,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.1.2-2563EB.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.0-2563EB.svg">
 </p>
 
 <p align="center">
@@ -67,8 +67,10 @@ This launcher folds all of that into one window:
 - **One button** that flips between "Start service" and "Stop service" based on the current state — no commands to remember, no way to click the wrong thing
 - **A single exe** — double-click and go, no console window
 - **Zero dependencies**: only the .NET Framework and PowerShell that ship with Windows
+- **Browser integration**: starting the service opens a **frameless standalone window**, and stopping the service **closes it automatically** — no more leftover tabs piling up in your everyday browser (this removes the old "the page won't close" limitation)
 - The service runs in a **separate background process**, so closing the window does not stop it
-- Supports **minimizing to the system tray**
+- Supports **minimizing to the system tray**; the tray menu can start/stop the service directly
+- A **"DS Open Platform" shortcut** (in both the window and the tray) that opens the DeepSeek platform so you can get an API key
 - **Guided first run**: detects Node.js, installs dsh automatically, and shows live install progress
 
 > **This is a third-party tool, not an official DeepSeek component.** It drives `@deepseek-ai/dsh` from the command line and contains none of dsh's own code.
@@ -120,7 +122,7 @@ and the download page opens automatically.
 
 Every later start is nearly instant.
 
-> To stop the service when you are done: click "Stop service" in the window, then **close the browser tab manually** (it will not close itself — see "After stopping the service" below).
+> To stop the service when you are done: just click "Stop service" — since v1.2.0 the standalone window **closes itself**, so there is no tab to close by hand (a few exceptions are covered in "After stopping the service" below).
 
 ## About the "workspace"
 
@@ -142,25 +144,63 @@ The launcher only starts and stops the service. It **does not take part in, and 
 |---|---|
 | Main button | Start / stop the background service; becomes "Cancel install" while dsh is installing |
 | **—** | Minimize to tray; the service keeps running |
-| **✕** | Close the window and clean up the tray icon; **the background service keeps running** |
+| **✕** | Quit the launcher (with a confirmation when the service is running, see below); **does not stop the DSH service** |
 | Double-click the tray icon | Restore and bring the original window to the front |
-| Tray menu "Exit" | Really quit the program |
+| Tray menu "Start service / Stop service" | Start or stop the service right from the tray — no need to restore the window first (one item that renames itself) |
+| Tray menu "Open WebUI" | Open the standalone window; if it is already open, switch to it instead of opening a second one |
+| Tray menu "DS Open Platform" | Open the DeepSeek platform home page in your default browser |
+| Tray menu "Exit" | Really quit the program (same confirmation as ✕) |
 | System-initiated close (Alt+F4, etc.) | Cancelled and tucked into the tray instead — avoids the "window is gone but the tray icon remains" state |
+
+### What happens when you close the launcher (since v1.2.0)
+
+Clicking **✕** or the tray menu's "Exit" while **the DSH service is running** first shows a three-way confirmation:
+
+```
+The DSH service is still running.
+
+Yes:    quit and stop the service
+No:     quit the launcher only; the service keeps running in the background.
+        To stop it later, open the launcher again and click "Stop service".
+Cancel: do not quit, return to the launcher
+```
+
+- The **default button is "Cancel"**, to avoid accidental clicks (pressing Enter will not stop your service);
+- When the service is **not** running, **no** dialog appears — the launcher just exits;
+- Choosing "No" leaves the service running. That is why **closing the launcher never stops the dsh service**:
+  to stop it, either pick "Yes" here or open the launcher again and click "Stop service".
 
 ## After stopping the service
 
-> [!IMPORTANT]
-> **After stopping the service, you must close the browser tab yourself.**
->
-> It will show "reconnecting" or "this page can't be reached". That is **expected, not a fault** — the service is simply stopped.
->
-> **Why it cannot be closed for you**: browsers impose a hard security rule — only `window.close()` called by the page itself can close a tab, and that page must have been opened by a script. Your tab was opened manually (or by the system), so **no server-side trick can close it**. This is part of the browser security model, not a defect of this tool.
+**Since v1.2.0 you normally have nothing to close by hand**: starting the service opens a
+**controlled standalone window**, and stopping the service closes it — together with its whole process group.
 
-Recommended order:
+That works because the window uses a **dedicated browser data directory**
+(`%LOCALAPPDATA%\dsh-web-launcher\browser-profile`). That makes it a separate process group which can be
+shut down precisely by directory, **without touching the tabs you have open in your everyday browser**.
 
-1. Click "Stop service" in the window
-2. Close the DSH tab in your browser manually
-3. When you need it again, click "Start service" (this opens a fresh tab with fresh credentials)
+The launcher picks a browser in this order (Chromium-based only — they all support the required flags):
+
+| Tier | Opened with | Auto-closes on stop? |
+|---|---|---|
+| ① | Microsoft Edge | ✅ yes |
+| ② | Another Chromium browser (Chrome / Brave / Vivaldi / Opera / 360Chrome) | ✅ yes |
+| ③ | Your system default browser | ❌ **no** — close the tab yourself |
+| ④ | None available | ❌ the UI shows the address and copies it to the clipboard |
+
+- When it falls back to ③ / ④, the log area **explicitly tells you** that this kind of tab cannot be closed
+  automatically and must be closed by hand (a tab showing "reconnecting" afterwards is normal — the service
+  stopped as expected);
+- After you **close the WebUI window manually**, you can always reopen it with "Open WebUI" in the window or
+  the tray menu (the launcher checks whether the window still exists: if it does, it switches to it instead of
+  opening a second one).
+
+> **Why it used to be impossible**: older versions opened the page in your system default browser. That tab was
+> "user-opened", and the browser security model forbids a server from closing it (only `window.close()` from the
+> page itself works). v1.2.0 switches to a controlled standalone window, which genuinely removes that limitation.
+
+To temporarily go back to the old behavior (always use the default browser, no window management), set the
+environment variable `DSH_WEBUI_BROWSER` to `default` before starting the launcher.
 
 ## Building from source
 
@@ -215,16 +255,22 @@ A: On first run it is downloading and installing dsh (about 200 MB). The log are
 A: Fixed in v1.1.0. If it still looks wrong, check `AppUserModelID` and the window icon values in `%LOCALAPPDATA%\dsh-web-launcher\ui-diagnostics.log`; if both are correct it is the Windows icon cache — move or rename the exe and run it again, or sign out once.
 
 **Q: I clicked the window's close button and the program is still running?**
-A: By design — **✕ only closes the window; the background service keeps running** (the tray icon is cleaned up). To quit the program entirely, use "Exit" in the tray menu; to stop the service, use "Stop service" in the window.
+A: It depends — since v1.2.0, clicking ✕ **while the service is running** first shows a three-way confirmation (quit and stop the service / quit the launcher only / cancel). If you pick "quit the launcher only", or the service is not running at all, the program exits while **the service keeps running in the background** — that is by design (the service is a separate background process). To stop it: open the launcher again and click "Stop service", or pick "Yes" in that dialog.
 
 **Q: The service is still running after I closed the window?**
-A: Same as above — the service is a separate background process. Use the "Stop service" button or the tray menu's "Exit" to end it.
+A: Same as above — the service is a separate background process. End it with the "Stop service" button, the tray menu's "Stop service", or by choosing "Yes" in the exit confirmation.
 
 **Q: Does it work on macOS / Linux?**
 A: No. The launcher depends on the Windows .NET Framework and PowerShell.
 
 **Q: Why doesn't the browser tab close itself after stopping the service?**
-A: The browser security model does not allow a server to close a tab the user opened — only `window.close()` from the page itself works, and the page must have been script-opened. So this step is **manual by necessity**. A tab showing "reconnecting" afterwards is normal and means the service stopped as expected.
+A: Since v1.2.0 it **does close automatically** — the service opens a controlled standalone window (its own browser data directory), and stopping the service closes that whole process group. Only when the launcher falls back to **your system default browser** do you need to close the tab yourself: that tab was opened by the browser and cannot be closed by a server (browser security model). The log area tells you explicitly when that happens.
+
+**Q: Could it accidentally close tabs in my everyday browser?**
+A: No. The WebUI window uses a **dedicated data directory** (`%LOCALAPPDATA%\dsh-web-launcher\browser-profile`) and is therefore its own process group; closing matches on that directory exactly, leaving your everyday browser untouched.
+
+**Q: Can I open a second WebUI window?**
+A: "Open WebUI" brings the existing window to the front if it is already open; a new one is created only after the old one has been closed.
 
 **Q: Does it upload my local sessions or keys?**
 A: No. The launcher makes no network calls and has no telemetry; it only invokes your local `dsh`. Your sessions and configuration stay in `%USERPROFILE%\.dsh\` and never pass through this project.
