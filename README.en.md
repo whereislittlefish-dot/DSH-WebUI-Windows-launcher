@@ -34,6 +34,10 @@
   <a href="README.md">中文</a> | English
 </p>
 
+<p align="center">
+  <img src="assets/screenshot-main.png" width="420" alt="DSH WebUI launcher main window (v1.2.1)">
+</p>
+
 ---
 
 ## Download

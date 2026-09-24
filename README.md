@@ -33,6 +33,10 @@
   <a href="README.en.md">English</a> | 中文
 </p>
 
+<p align="center">
+  <img src="assets/screenshot-main.png" width="420" alt="DSH WebUI 启动器主界面（v1.2.1）">
+</p>
+
 ---
 
 ## 下载
