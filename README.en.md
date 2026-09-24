@@ -27,7 +27,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.0-2563EB.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.1-2563EB.svg">
 </p>
 
 <p align="center">
@@ -71,6 +71,8 @@ This launcher folds all of that into one window:
 - The service runs in a **separate background process**, so closing the window does not stop it
 - Supports **minimizing to the system tray**; the tray menu can start/stop the service directly
 - A **"DS Open Platform" shortcut** (in both the window and the tray) that opens the DeepSeek platform so you can get an API key
+- **dsh version check & one-click update** (v1.2.1): one check at startup, shown only when a newer version exists;
+  a single click upgrades it — the service is stopped first, and **you decide when to restart it**
 - **Guided first run**: detects Node.js, installs dsh automatically, and shows live install progress
 
 > **This is a third-party tool, not an official DeepSeek component.** It drives `@deepseek-ai/dsh` from the command line and contains none of dsh's own code.
@@ -151,6 +153,7 @@ The launcher only starts and stops the service. It **does not take part in, and 
 | Tray menu "DS Open Platform" | Open the DeepSeek platform home page in your default browser |
 | Tray menu "Exit" | Really quit the program (same confirmation as ✕) |
 | System-initiated close (Alt+F4, etc.) | Cancelled and tucked into the tray instead — avoids the "window is gone but the tray icon remains" state |
+| Bottom "DSH update" row (v1.2.1) | Shows the dsh version status: up to date / newer version available (click to update) / check failed (click to retry) |
 
 ### What happens when you close the launcher (since v1.2.0)
 
@@ -273,11 +276,32 @@ A: No. The WebUI window uses a **dedicated data directory** (`%LOCALAPPDATA%\dsh
 A: "Open WebUI" brings the existing window to the front if it is already open; a new one is created only after the old one has been closed.
 
 **Q: Does it upload my local sessions or keys?**
-A: No. The launcher makes no network calls and has no telemetry; it only invokes your local `dsh`. Your sessions and configuration stay in `%USERPROFILE%\.dsh\` and never pass through this project.
+A: No. Apart from **one dsh version check at startup** (see the FAQ below), the launcher makes no network calls and has no telemetry; it only invokes your local `dsh`. Your sessions and configuration stay in `%USERPROFILE%\.dsh\` and never pass through this project.
 
 **Q: Where does the launcher put its own files?**
 A: All under `%LOCALAPPDATA%\dsh-web-launcher\`: service logs, install logs,
 and `ui-diagnostics.log` for troubleshooting the icon.
+
+**Q: How do I update dsh? (v1.2.1)**
+A: The bottom row of the window is the entry point. The launcher checks for a newer dsh **once at startup**
+— the only network call it makes on its own, and it never checks again while running — then shows:
+
+| Display | Meaning | Clickable |
+|---|---|---|
+| `Current DSH is up to date (x.y.z)` | nothing to do | no |
+| `Update DSH (old → new)` | a newer version exists | **click → confirm → upgrade** |
+| `dsh update check failed (click to retry)` | network / proxy problem | click to retry |
+| `DSH is not installed yet` | no dsh yet | use "Start service" for the first-run install |
+
+Clicking "Update DSH" first shows a confirmation (old → new). After you confirm, it:
+
+1. **stops the service automatically** (npm overwrites the dsh install directory, which a running service may hold open);
+2. runs the official command **`npm install --global @deepseek-ai/dsh@latest`**, with live progress and a cancel option;
+3. **does not restart the service automatically** — click "Start service" when you are ready to run the new version.
+
+If the upgrade fails, the log prints a rollback command
+(`npm install --global @deepseek-ai/dsh@<old-version>`). The launcher **never patches dsh's source** —
+it runs exactly the command you would type yourself, and **never re-checks in the background**.
 
 ## License
 
