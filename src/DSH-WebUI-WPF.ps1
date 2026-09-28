@@ -182,7 +182,7 @@ if ($script:RunningInstance) {
 
 # 界面版本号：显示在标题栏，并写进 ui-diagnostics.log——排障或反馈时一眼能确认用的是哪一版。
 # 发版时这里要跟着 README 徽章和 git tag 一起改。
-$script:AppVersion = 'v1.2.3'
+$script:AppVersion = 'v1.2.4'
 
 # netstat 探测结果缓存（见 Get-DshWebInstance）：界面每隔几秒刷新一次状态，
 # 没有缓存时每次都要拉起一个 netstat 进程，白白消耗 CPU。
@@ -947,15 +947,26 @@ $xamlText = @'
         <Border Grid.Row="8" Background="#F9FAFB" CornerRadius="8" BorderBrush="{StaticResource Border}"
                 BorderThickness="1" Margin="0,20,0,0" Padding="14,12">
           <ScrollViewer x:Name="LogScroll" VerticalScrollBarVisibility="Auto">
-            <ItemsControl x:Name="LogList">
+            <!-- v1.2.4 修复（用户实测反馈）：日志区的长行被裁掉，既不能折行也滚不到。
+                 根因：日志项外层原本是**水平 StackPanel** —— 它沿排列方向不约束子元素宽度，
+                 于是文字 TextBlock 拿到"无限可用宽度"，TextWrapping="Wrap" 永远不会触发，
+                 长行一直向右延伸；而外层 ScrollViewer 的横向滚动是默认的 Disabled，
+                 超出部分就这样被直接裁掉（看不到后半截）。
+                 改法：换成两列 Grid（图标 Auto ＋ 文字 *），文字列宽度受限 → Wrap 生效；
+                 并给 ItemsControl 设 HorizontalContentAlignment=Stretch，让项容器撑满整行宽度。 -->
+            <ItemsControl x:Name="LogList" HorizontalContentAlignment="Stretch">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                    <TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                  <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="13"
                                Foreground="{StaticResource Success}" VerticalAlignment="Top" Margin="0,2,0,0"/>
-                    <TextBlock Text="{Binding}" Margin="10,0,0,0" FontSize="13.5"
+                    <TextBlock Grid.Column="1" Text="{Binding}" Margin="10,0,0,0" FontSize="13.5"
                                Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
-                  </StackPanel>
+                  </Grid>
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -1970,6 +1981,14 @@ function Start-DshService {
         }
         $state | ConvertTo-Json | Set-Content -LiteralPath $script:StateFile -Encoding UTF8
         Write-UILog ("进程已启动（PID {0}），等待就绪 ..." -f $proc.Id)
+        # v1.2.4（用户要求）：**一启动就直接说明可能较慢**，不要等超时再说 ——
+        # 用户看不到原因时会以为界面卡死。实测依据（docs\验证日志\v1.2.4-启动耗时实测.log）：
+        #   · 开机后第一次启动：dsh 进程创建 → 端口监听约 23 秒（到窗口出现约 25 秒）；
+        #   · 刚升级过 dsh 后第一次：同一段约 50 秒；
+        #   · 稳定态（插件树已进系统缓存）：约 2 秒 / 到窗口出现约 5 秒。
+        # 那几十秒是 **dsh 自己加载插件树**（~\.dsh\profiles，约 6.3 万个文件）造成的，
+        # 启动器在这段里只是等待，没有可压缩的余地 —— 所以文案只解释、不改任何流程。
+        Write-UILog '提示：开机后第一次启动较慢（dsh 需要加载插件，可能几十秒；刚升级过 dsh 时也一样），请耐心等待。'
 
         # v1.2.0 修复（重要）：**必须以服务日志里带 token 的地址为准**。
         # 实测：端口开始监听比日志打印 `dsh web: …?token=…` 早约 1.8 秒，而 v1.2.0 用的是
@@ -2592,6 +2611,70 @@ if ($env:DSH_WEBUI_SELFTEST) {
                 $dshPath = Find-Dsh
                 $m2 = ("SELFTEST dsh-executable -> {0}" -f $(if ($dshPath) { $dshPath } else { '(PATH 上没找到 dsh)' }))
                 Write-UILog $m2; Write-SelfTestLog $m2
+            }
+            'log-wrap' {
+                # v1.2.4 只读：日志长行换行的回归验证（用户实测缺陷）。
+                # 判据全都在**真实界面上量**，不看代码猜：
+                #   ① 一条 200 字符的日志折成多行（高度 ≥ 单行基准的 1.8 倍）
+                #   ② 文字块自身宽度不超视口（超出的部分会被裁掉，正是用户看到的现象）
+                # 注意②不能用 ScrollViewer.ExtentWidth 判断：横向滚动条是默认的 Disabled 时，
+                # ScrollViewer 会把内容宽度压成视口宽，溢出**不体现在 ExtentWidth 上**
+                # （A/B 对照脚本里实测过：旧模板文字块 1676 vs 视口 557，ExtentWidth 却等于 557）。
+                # 不启动任何进程、不动状态文件，符合自检"只读"原则。
+                # 取"刚写进去那一条"的文字 TextBlock：模板里有两格（图标 / 文字），取字符数多的那个。
+                $getLastLogBlock = {
+                    $cp = $logList.ItemContainerGenerator.ContainerFromIndex($logItems.Count - 1)
+                    if (-not $cp) { return $null }
+                    $blocks = New-Object System.Collections.ArrayList
+                    $stack = New-Object System.Collections.Stack
+                    $stack.Push($cp)
+                    while ($stack.Count -gt 0) {
+                        $el = $stack.Pop()
+                        if ($el -is [System.Windows.Controls.TextBlock]) { [void] $blocks.Add($el) }
+                        $n = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($el)
+                        for ($i = 0; $i -lt $n; $i++) { $stack.Push([System.Windows.Media.VisualTreeHelper]::GetChild($el, $i)) }
+                    }
+                    if ($blocks.Count -eq 0) { return $null }
+                    return ($blocks | Sort-Object -Property { $_.Text.Length } -Descending | Select-Object -First 1)
+                }
+
+                Write-UILog 'SHORT'
+                $win.UpdateLayout()
+                $tbShort = & $getLastLogBlock
+                $h1 = if ($tbShort) { [double] $tbShort.ActualHeight } else { -1 }
+
+                $longText = ('长行折行验证 ' + ('0123456789' * 18) + ' END-OF-LONG-LINE')
+                Write-UILog $longText
+                $win.UpdateLayout()
+                $tbLong = & $getLastLogBlock
+                $h2 = if ($tbLong) { [double] $tbLong.ActualHeight } else { -1 }
+                $w2 = if ($tbLong) { [double] $tbLong.ActualWidth } else { -1 }
+                $ratio = if ($h1 -gt 0) { [Math]::Round($h2 / $h1, 2) } else { -1 }
+                $viewW = [double] $logScroll.ViewportWidth
+                $overflow = [Math]::Round(($w2 - $viewW), 2)
+                $m = ("SELFTEST log-wrap -> 单行高={0:N2} 长行高={1:N2} 折行倍数={2} 文字块宽={3:N2} 视口宽={4:N2} 超出={5:N2} 长行字符数={6}" -f `
+                        $h1, $h2, $ratio, $w2, $viewW, $overflow, $longText.Length)
+                Write-UILog $m; Write-SelfTestLog $m
+                $verdict = if ($h1 -gt 0 -and $h2 -ge ($h1 * 1.8) -and $overflow -le 1) { 'PASS' } else { 'FAIL' }
+                $m2 = ("SELFTEST log-wrap-verdict -> {0} [期望 PASS；FAIL = 长行没折 或 文字块超出视口被裁]" -f $verdict)
+                Write-UILog $m2; Write-SelfTestLog $m2
+
+                # 验收要点③：**含长 URL 的无空格英文串**也必须折行（v1.2.2 起日志里真实出现过
+                # 这种超长行，中文长行能折不代表它也能折）。素材取自真实 npm http 输出。
+                $urlText = '[npm] npm http fetch GET 200 https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.1.5-rc.3.tgz 25394ms (cache miss)'
+                Write-UILog $urlText
+                $win.UpdateLayout()
+                $tbUrl = & $getLastLogBlock
+                $h3 = if ($tbUrl) { [double] $tbUrl.ActualHeight } else { -1 }
+                $w3 = if ($tbUrl) { [double] $tbUrl.ActualWidth } else { -1 }
+                $ratio3 = if ($h1 -gt 0) { [Math]::Round($h3 / $h1, 2) } else { -1 }
+                $overflow3 = [Math]::Round(($w3 - $viewW), 2)
+                $m3 = ("SELFTEST log-wrap-url -> 长行高={0:N2} 折行倍数={1} 文字块宽={2:N2} 视口宽={3:N2} 超出={4:N2} 字符数={5}" -f `
+                        $h3, $ratio3, $w3, $viewW, $overflow3, $urlText.Length)
+                Write-UILog $m3; Write-SelfTestLog $m3
+                $verdict3 = if ($h1 -gt 0 -and $h3 -ge ($h1 * 1.8) -and $overflow3 -le 1) { 'PASS' } else { 'FAIL' }
+                $m4 = ("SELFTEST log-wrap-url-verdict -> {0} [含长 URL 的无空格英文串]" -f $verdict3)
+                Write-UILog $m4; Write-SelfTestLog $m4
             }
             default {
                 Write-UILog ("SELFTEST 未知步骤：{0}" -f $stepName)

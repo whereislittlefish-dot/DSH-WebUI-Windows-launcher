@@ -27,7 +27,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.2-2563EB.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.4-2563EB.svg">
 </p>
 
 <p align="center">
@@ -80,6 +80,11 @@ This launcher folds all of that into one window:
 - **No accidental second launcher** (v1.2.2): launching it again while it is already running shows an
   "already running" message and **brings the existing window to the front** — no second window is created,
   and the running service is never touched
+- **Slow starts explain themselves** (v1.2.4): right after you click the main button it says outright that the
+  first start after boot can be slow (dsh has to load its plugins — possibly tens of seconds; the same applies
+  right after a dsh upgrade) and asks you to wait, with a progress line every 8 seconds.
+  Later starts usually take only a few seconds
+- **Long log lines are no longer cut off** (v1.2.4): over-long entries wrap and stay fully readable
 
 > **This is a third-party tool, not an official DeepSeek component.** It drives `@deepseek-ai/dsh` from the command line and contains none of dsh's own code.
 

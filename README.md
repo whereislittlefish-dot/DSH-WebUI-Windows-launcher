@@ -26,7 +26,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2EA44F.svg"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-4493F8.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.2-2563EB.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.2.4-2563EB.svg">
 </p>
 
 <p align="center">
@@ -78,6 +78,10 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
   （例如 `已获取 486 个包，用时 225 秒，最近：@vscode/ripgrep-win32-x64`），一眼能看出是"真在下载"还是"卡住了"
 - **不会开出两个启动器**（v1.2.2）：已经开着的时候再双击，会提示「已经在运行」并把**已有的那个窗口叫到前面** ——
   不会新建窗口，也不会碰到正在运行的服务
+- **启动慢时会直接说明原因**（v1.2.4）：点「启动服务」后立刻提示「开机后第一次启动较慢（dsh 需要加载插件，
+  可能几十秒；刚升级过 dsh 时也一样），请耐心等待」，并每 8 秒给一次等待进度 ——
+  开机后第一次要等 dsh 加载自己的插件，之后每次通常只要几秒
+- **日志区的长行不再被裁掉**（v1.2.4）：超长日志会自动折行、完整可读，不再只显示半截
 
 > **这是第三方工具，不是 DeepSeek 官方组件。** 它通过命令行调用 `@deepseek-ai/dsh`，不包含 dsh 的任何代码。
 
