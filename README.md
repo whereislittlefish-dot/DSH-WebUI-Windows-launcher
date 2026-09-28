@@ -16,10 +16,10 @@
 <p align="center">
   <b>和其他 dsh 桌面端的区别</b>：
   GitHub 上已有若干 dsh 桌面端项目，它们把 dsh 打包成自带运行时的完整应用（多为 Electron/Tauri），安装体积较大、需要随 dsh 一起更新。<br>
-  本项目走的是另一条路：既不改 dsh 源码，也不打包它——<b>只调用你已装好的 <code>dsh web</code></b>，
+  本项目走的是另一条路：既不改 dsh 源码，也不打包它——<b>只调用系统里的 <code>dsh web</code></b>，
   管好它的启停，并提供一个按钮界面与托盘。<br>
   整个程序就是一个 <b>单文件 exe</b>，不含 Node.js、不含 dsh
-  （因此需要你自己装好 Node.js 与 dsh，详见下方「前置要求」）；
+  （Node.js 需要你自己装好；dsh 若还没装，<b>首次启动时启动器会自动帮你装好</b>，详见下方「前置要求」）；
   dsh 由你用 npm 自行更新，升级 dsh 不影响启动器。
 </p>
 
@@ -90,7 +90,7 @@ DeepSeek Harness（`dsh`）本身通过 `dsh web` 在本地起一个浏览器界
 | 要求 | 说明 |
 |---|---|
 | Windows 10 / 11 | 需要系统自带的 .NET Framework 4.x 与 PowerShell 5.1 |
-| Node.js 20+ | 建议预先安装：[nodejs.org](https://nodejs.org/zh-cn/download)。**没装也能启动**，界面会给出下载地址并自动打开下载页 |
+| Node.js 20+ | 建议预先安装：[nodejs.org](https://nodejs.org/zh-cn/download)。**没装也能打开启动器**——界面会给出下载地址并自动打开下载页；但装好 Node.js 之前无法启动服务 |
 | 网络（仅首次） | 首次启动会自动安装 dsh（约 200 MB）|
 
 ## 快速开始

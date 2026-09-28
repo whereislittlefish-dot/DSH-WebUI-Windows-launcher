@@ -18,8 +18,9 @@
   There are several desktop clients that package dsh into a self-contained app (mostly Electron/Tauri),
   with a large install size and updates tied to dsh.<br>
   This project takes the opposite route: it neither modifies nor bundles dsh —
-  it simply drives the <code>dsh web</code> you already have, managing start/stop,
-  with a one-button window and a tray icon.<br>
+  it drives the <code>dsh web</code> on your machine, managing start/stop,
+  with a one-button window and a tray icon
+  (and if dsh isn't installed yet, <b>the launcher installs it for you on first run</b>).<br>
   The whole program is a <b>single exe</b>: no Node.js, no dsh inside;
   update dsh with npm whenever you like, and the launcher is unaffected.
 </p>
@@ -93,7 +94,7 @@ This launcher folds all of that into one window:
 | Requirement | Notes |
 |---|---|
 | Windows 10 / 11 | Uses the built-in .NET Framework 4.x and PowerShell 5.1 |
-| Node.js 20+ | Recommended: install it first from [nodejs.org](https://nodejs.org/en/download). **It also works without Node.js** — the UI shows the download link and opens the page for you |
+| Node.js 20+ | Recommended: install it first from [nodejs.org](https://nodejs.org/en/download). **The launcher still opens without it** — the UI shows the download link and opens the page for you; the service can't start until Node.js is installed |
 | Network (first run only) | The first launch installs dsh automatically (about 200 MB) |
 
 ## Quick start
